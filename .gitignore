@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Distribuição / build
+build/
+dist/
+*.egg-info/
+.eggs/
+*.spec
+
+# Configuração local do usuário
+config.json
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs e temporários
+*.log
+*.tmp
