@@ -36,37 +36,90 @@ def list_microphones() -> list[DeviceInfo]:
 
 
 def default_camera() -> str:
-    system = platform.system()
-    if system == "Linux":
-        return "/dev/video0"
     cameras = list_cameras()
     return cameras[0].value if cameras else ""
 
 
 def default_microphone() -> str:
-    system = platform.system()
-    if system == "Linux":
-        return "hw:3,0"
     microphones = list_microphones()
     return microphones[0].value if microphones else ""
 
 
 def _list_linux_cameras() -> list[DeviceInfo]:
+    """Lista apenas nós V4L2 com capacidade real de captura de vídeo."""
     devices: list[DeviceInfo] = []
     video_root = Path("/dev")
     if not video_root.exists():
         return devices
 
     for path in sorted(video_root.glob("video*")):
-        devices.append(DeviceInfo(label=str(path), value=str(path)))
+        if not path.is_char_device() and not path.exists():
+            continue
+        if not _is_v4l2_video_capture(path):
+            continue
+        name = _v4l2_device_name(path)
+        label = f"{path} — {name}" if name else str(path)
+        devices.append(DeviceInfo(label=label, value=str(path)))
 
-    if not devices:
-        devices.append(DeviceInfo(label="/dev/video0", value="/dev/video0"))
-    return devices
+    return _unique_devices(devices)
+
+
+def _is_v4l2_video_capture(path: Path) -> bool:
+    """True somente se o device expõe formatos de captura (não metadata/output)."""
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "--device", str(path), "--list-formats-ext"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+    lower = output.lower()
+    if not output.strip():
+        return False
+    if "inappropriate ioctl" in lower or "invalid argument" in lower:
+        return False
+
+    # Nós de captura listam pixel formats / tamanhos; metadata/output não.
+    has_pixel_format = "pixel format" in lower
+    has_size = re.search(r"Size:\s*(Discrete|Stepwise)", output, re.IGNORECASE) is not None
+    return has_pixel_format or has_size
+
+
+def _v4l2_device_name(path: Path) -> str:
+    sys_name = Path("/sys/class/video4linux") / path.name / "name"
+    try:
+        if sys_name.exists():
+            return sys_name.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "--device", str(path), "--info"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        match = re.search(
+            r"Card\s+type\s*:\s*(.+)$",
+            result.stdout or "",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if match:
+            return match.group(1).strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
 
 
 def _list_linux_microphones() -> list[DeviceInfo]:
-    """Lista dispositivos ALSA via `arecord -l` quando disponível."""
+    """Lista somente placas/dispositivos ALSA reportados por `arecord -l`."""
     devices: list[DeviceInfo] = []
     try:
         result = subprocess.run(
@@ -76,9 +129,9 @@ def _list_linux_microphones() -> list[DeviceInfo]:
             timeout=5,
             check=False,
         )
-        output = result.stdout + result.stderr
+        output = (result.stdout or "") + (result.stderr or "")
     except (OSError, subprocess.TimeoutExpired):
-        output = ""
+        return devices
 
     # card 3: Device [...], device 0: USB Audio [...]
     pattern = re.compile(
@@ -91,10 +144,7 @@ def _list_linux_microphones() -> list[DeviceInfo]:
         label = f"{value} — {name}"
         devices.append(DeviceInfo(label=label, value=value))
 
-    if not devices:
-        devices.append(DeviceInfo(label="hw:3,0", value="hw:3,0"))
-        devices.append(DeviceInfo(label="default", value="default"))
-    return devices
+    return _unique_devices(devices)
 
 
 def _list_windows_dshow_devices(*, video: bool) -> list[DeviceInfo]:
@@ -128,9 +178,7 @@ def _list_windows_dshow_devices(*, video: bool) -> list[DeviceInfo]:
 def _parse_dshow_devices(output: str, *, video: bool) -> list[DeviceInfo]:
     devices: list[DeviceInfo] = []
     section: str | None = None
-    # Ex.: [dshow @ ...] "Integrated Camera" (video)
     name_pattern = re.compile(r'"([^"]+)"\s*\((video|audio)\)', re.IGNORECASE)
-    # Algumas builds listam só o nome entre aspas após o cabeçalho
     quoted_pattern = re.compile(r'^\s*\[dshow[^\]]*\]\s*"([^"]+)"\s*$')
 
     for line in output.splitlines():
@@ -160,7 +208,10 @@ def _parse_dshow_devices(output: str, *, video: bool) -> list[DeviceInfo]:
                 name = quoted.group(1)
                 devices.append(DeviceInfo(label=name, value=name))
 
-    # Remove duplicatas preservando ordem
+    return _unique_devices(devices)
+
+
+def _unique_devices(devices: list[DeviceInfo]) -> list[DeviceInfo]:
     seen: set[str] = set()
     unique: list[DeviceInfo] = []
     for device in devices:

@@ -526,11 +526,7 @@ class MainWindow(QMainWindow):
             for camera in cameras:
                 self.camera_combo.addItem(camera.label, camera.value)
         else:
-            default_cam = devices.default_camera()
-            if default_cam:
-                self.camera_combo.addItem(default_cam, default_cam)
-            else:
-                self.camera_combo.addItem("Nenhuma câmera encontrada", "")
+            self.camera_combo.addItem("Nenhuma câmera encontrada", "")
 
         self.microphone_combo.clear()
         microphones = devices.list_microphones()
@@ -538,15 +534,12 @@ class MainWindow(QMainWindow):
             for mic in microphones:
                 self.microphone_combo.addItem(mic.label, mic.value)
         else:
-            default_mic = devices.default_microphone()
-            if default_mic:
-                self.microphone_combo.addItem(default_mic, default_mic)
-            else:
-                self.microphone_combo.addItem("Nenhum microfone encontrado", "")
+            self.microphone_combo.addItem("Nenhum microfone encontrado", "")
 
-        if current_camera:
+        # Só restaura seleção anterior se o dispositivo ainda existir de verdade
+        if current_camera and any(c.value == current_camera for c in cameras):
             self._select_combo_value(self.camera_combo, current_camera)
-        if current_mic:
+        if current_mic and any(m.value == current_mic for m in microphones):
             self._select_combo_value(self.microphone_combo, current_mic)
 
     def _apply_config_to_ui(self, config: StreamConfig) -> None:
@@ -554,10 +547,20 @@ class MainWindow(QMainWindow):
         self.srt_port_spin.setValue(config.srt_port)
         self.stream_id_edit.setText(config.stream_id)
         self._select_combo_value(self.resolution_combo, config.resolution)
-        self._select_combo_value(self.camera_combo, config.camera)
-        self._select_combo_value(self.microphone_combo, config.microphone)
+        self._select_combo_value(self.camera_combo, config.camera, allow_missing=False)
+        self._select_combo_value(
+            self.microphone_combo,
+            config.microphone,
+            allow_missing=False,
+        )
 
-    def _select_combo_value(self, combo: QComboBox, value: object) -> None:
+    def _select_combo_value(
+        self,
+        combo: QComboBox,
+        value: object,
+        *,
+        allow_missing: bool = True,
+    ) -> None:
         if value is None or value == "":
             return
 
@@ -566,6 +569,10 @@ class MainWindow(QMainWindow):
             index = combo.findText(str(value))
         if index >= 0:
             combo.setCurrentIndex(index)
+            return
+
+        # Não reinsere dispositivos desconectados salvos no config
+        if not allow_missing:
             return
 
         combo.addItem(str(value), value)
