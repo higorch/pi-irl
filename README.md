@@ -83,12 +83,18 @@ Substitua `PORTA_BSBF` pela porta retornada (ex.: `16384`).
 
 ### 1. GStreamer + ferramentas
 
+Só o necessário para o pipeline IRL (V4L2 + ALSA → x264/AAC → SRT):
+
 ```bash
-sudo apt update
-sudo apt install -y \
-  gstreamer1.0-tools gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-  gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+sudo apt-get update
+sudo apt-get install -y \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav \
+  gstreamer1.0-alsa \
   v4l-utils alsa-utils \
   python3 python3-venv python3-pip git
 ```
@@ -96,8 +102,7 @@ sudo apt install -y \
 Conferir:
 
 ```bash
-gst-launch-1.0 --version
-gst-inspect-1.0 srtsink
+gst-inspect-1.0 srtsink x264enc avenc_aac v4l2src alsasrc
 v4l2-ctl --list-devices
 arecord -l
 ```
@@ -164,7 +169,7 @@ python -m app.main
 
 | Sintoma | O que fazer |
 |---------|-------------|
-| GStreamer / `srtsink` ausente | Reinstalar os pacotes `gstreamer1.0-*` acima |
+| Plugin GStreamer ausente | Rodar de novo o `apt-get install` da seção do Pi |
 | MediaMTX offline | Conferir se `./mediamtx` está rodando; liberar `8890/udp` e `8554/tcp` |
 | OBS sem vídeo | Conferir Stream ID, `rtsp://IP:8554/...` e status **Ao vivo** no Pi-IRL |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |
