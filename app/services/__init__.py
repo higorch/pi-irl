@@ -1,1 +1,1 @@
-"""Serviços de dispositivos, FFmpeg e transmissão."""
+"""Serviços de dispositivos, GStreamer e transmissão."""

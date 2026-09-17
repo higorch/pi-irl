@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from app.config import load_config, save_config
 from app.models.stream_config import StreamConfig, StreamStatus
 from app.services import devices
-from app.services.ffmpeg import FFmpegService
+from app.services.gstreamer import GStreamerService
 from app.services.stream import StreamService
 from app.ui.styles import APP_STYLESHEET, COMPACT_STYLESHEET
 
@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
 
         self._config = load_config()
         self._stream = StreamService(self)
-        self._ffmpeg_ready = False
+        self._gstreamer_ready = False
         self._current_rtsp_url = ""
 
         self._build_ui()
@@ -224,11 +224,11 @@ class MainWindow(QMainWindow):
         chips.setContentsMargins(0, 0, 0, 0)
         chips.setSpacing(6)
 
-        self.dep_ffmpeg_label = QLabel()
+        self.dep_gstreamer_label = QLabel()
         self.dep_camera_label = QLabel()
         self.dep_mic_label = QLabel()
         for item in (
-            self.dep_ffmpeg_label,
+            self.dep_gstreamer_label,
             self.dep_camera_label,
             self.dep_mic_label,
         ):
@@ -506,7 +506,7 @@ class MainWindow(QMainWindow):
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(2000)
-        self.log_view.setPlaceholderText("A saída do FFmpeg aparece aqui...")
+        self.log_view.setPlaceholderText("A saída do GStreamer aparece aqui...")
         self.log_view.setMinimumHeight(56 if self._compact else 80)
         font = QFont("Consolas")
         font.setStyleHint(QFont.StyleHint.Monospace)
@@ -641,8 +641,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_dependencies(self) -> None:
         """Atualiza o checklist sutil de dependências (sem modal)."""
-        ffmpeg_path = FFmpegService.resolve_ffmpeg_path()
-        ffmpeg_ok = ffmpeg_path is not None
+        gst_path = GStreamerService.resolve_gst_launch_path()
+        gst_ok = gst_path is not None
 
         camera = str(self._combo_value(self.camera_combo) or "").strip()
         microphone = str(self._combo_value(self.microphone_combo) or "").strip()
@@ -650,10 +650,10 @@ class MainWindow(QMainWindow):
         mic_ok = bool(microphone) and microphone != "Nenhum microfone encontrado"
 
         self._set_dep_chip(
-            self.dep_ffmpeg_label,
-            ok=ffmpeg_ok,
-            label="FFmpeg",
-            detail=ffmpeg_path or "Não encontrado no PATH",
+            self.dep_gstreamer_label,
+            ok=gst_ok,
+            label="GStreamer",
+            detail=gst_path or "gst-launch-1.0 não encontrado no PATH",
         )
         self._set_dep_chip(
             self.dep_camera_label,
@@ -668,9 +668,9 @@ class MainWindow(QMainWindow):
             detail=microphone if mic_ok else "Nenhum detectado",
         )
 
-        self._ffmpeg_ready = ffmpeg_ok
+        self._gstreamer_ready = gst_ok
         if not self._stream.is_active:
-            self.start_button.setEnabled(ffmpeg_ok)
+            self.start_button.setEnabled(gst_ok)
 
     def _set_dep_chip(
         self,
@@ -746,7 +746,9 @@ class MainWindow(QMainWindow):
             StreamStatus.LIVE,
             StreamStatus.STOPPING,
         )
-        self.start_button.setEnabled(not active and getattr(self, "_ffmpeg_ready", True))
+        self.start_button.setEnabled(
+            not active and getattr(self, "_gstreamer_ready", True)
+        )
         self.stop_button.setEnabled(active and status != StreamStatus.STOPPING)
         self.refresh_video_button.setEnabled(not active)
         self.refresh_audio_button.setEnabled(not active)

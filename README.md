@@ -2,127 +2,109 @@
 
 [![GitHub](https://img.shields.io/badge/GitHub-higorch%2Fpi--irl-181717?logo=github&logoColor=white)](https://github.com/higorch/pi-irl) [![License](https://img.shields.io/badge/License-Apache_2.0-D22128?logo=apache&logoColor=white)](LICENSE) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%204-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/)
 
-Aplicação desktop para **transmissão IRL** a partir de um Raspberry Pi: captura câmera e microfone, envia o sinal pela internet e permite assistir/gravar no OBS.
+Transmissão IRL no Raspberry Pi: câmera + microfone → **GStreamer** → **SRT** → **MediaMTX** (VPS) → **RTSP** / OBS.
 
-**Testado em:** Raspberry Pi 4 Model B 4 GB com Raspberry Pi OS 64-bit.
-
----
-
-## O que é e para que serve
-
-O **Pi-IRL** é o painel no Raspberry Pi. Você escolhe câmera, microfone e o destino na VPS; o app monta e controla o **FFmpeg**, que publica o áudio/vídeo via **SRT**.
-
-Sozinho o Pi não basta para o OBS na rede: quem recebe o SRT e entrega o stream em **RTSP** (e outros protocolos) é o **MediaMTX**, rodando em uma **VPS**. Assim o Pi só envia; a VPS concentra o stream e o OBS conecta nela.
-
-Quando a internet do Pi é instável (Wi‑Fi + 4G), entra o **Bonding BSBF** (opcional): agrega links com MPTCP entre o Pi e a VPS, melhorando a estabilidade do caminho até o MediaMTX. O bonding cuida da rede; o Pi-IRL continua responsável pela captura e pela publicação SRT.
+**Testado em:** Raspberry Pi 4 Model B 4 GB · Raspberry Pi OS 64-bit.
 
 ```text
 Câmera + Microfone
         ↓
-   Pi-IRL / FFmpeg
+   Pi-IRL / GStreamer
         ↓
-   SRT  (+ bonding BSBF, opcional)
+   SRT  (+ BSBF opcional)
         ↓
    VPS / MediaMTX
         ↓
-      RTSP
-        ↓
-       OBS
+      RTSP → OBS
 ```
 
-| Onde | Papel |
-|------|--------|
-| **Raspberry Pi** | App Pi-IRL, FFmpeg, câmera, microfone e, se usar bonding, o BSBF Client |
-| **VPS** | MediaMTX (SRT → RTSP) e, se usar bonding, o BSBF Server |
+| Onde | O que roda |
+|------|------------|
+| **VPS** | MediaMTX · BSBF Server (opcional) |
+| **Raspberry Pi** | Pi-IRL · GStreamer · BSBF Client (opcional) |
 
-> O Pi-IRL **não** configura o MediaMTX. Ele só publica via SRT. O OBS consome o RTSP gerado na VPS.
-
----
-
-## MediaMTX na VPS
-
-O **MediaMTX** é o servidor de mídia na nuvem. Ele:
-
-1. Recebe a publicação SRT do Raspberry Pi  
-2. Cria o path automaticamente com base no **Stream ID**  
-3. Disponibiliza o stream em RTSP para o OBS (e outros clientes)
-
-**Por que na VPS?** O Pi não precisa servir RTSP para a internet; a VPS tem IP estável e banda melhor; vários players podem ler o mesmo stream sem sobrecarregar o Pi.
-
-| Protocolo | Porta padrão |
-|-----------|-------------:|
-| SRT | `8890` |
-| RTSP | `8554` |
-| RTMP | `1935` |
-| HLS | `8888` |
-
-No firewall da VPS, libere pelo menos **SRT (8890)** e **RTSP (8554)**.
-
-| Stream ID | O Pi publica | O OBS lê |
-|-----------|--------------|----------|
-| `irl` | `srt://VPS:8890?mode=caller&streamid=publish:irl` | `rtsp://VPS:8554/irl` |
-| `camera01` | `…streamid=publish:camera01` | `rtsp://VPS:8554/camera01` |
-
-Substitua `VPS` pelo IP ou domínio do seu servidor.
+Sem bonding o fluxo já funciona. O BSBF só agrega Wi‑Fi + 4G (MPTCP) quando a internet do Pi é instável.
 
 ---
 
-## Bonding BSBF (opcional)
+## Na VPS
 
-O **BSBF** (*Bonding Should Be Free*) agrega Wi‑Fi e modems 4G com **MPTCP**, para a transmissão IRL não cair quando uma das redes falha. É opcional: sem bonding o Pi-IRL + MediaMTX já funcionam; com bonding a rota até a VPS fica mais robusta.
+### 1. MediaMTX
 
-### No servidor (VPS)
+Servidor de mídia: recebe o SRT do Pi e entrega RTSP para o OBS.  
+Doc oficial: [Introduction](https://mediamtx.org/docs/kickoff/introduction) · [Install](https://mediamtx.org/docs/kickoff/install)
+
+1. Baixe o binário da sua arquitetura em [Releases](https://github.com/bluenviron/mediamtx/releases) (ex.: `mediamtx_v1.xx.x_linux_amd64.tar.gz`).
+2. Extraia e inicie:
 
 ```bash
-# Instalar o BSBF Server
+tar -xzf mediamtx_v*_linux_amd64.tar.gz
+./mediamtx
+```
+
+Liberar no firewall: `8890/udp` (SRT) e `8554/tcp` (RTSP).
+
+| Stream ID | Pi publica | OBS lê |
+|-----------|------------|--------|
+| `irl` | `srt://IP_VPS:8890?mode=caller&streamid=publish:irl` | `rtsp://IP_VPS:8554/irl` |
+
+### 2. Bonding BSBF (opcional — servidor)
+
+```bash
 curl -fsSL srv.bondingshouldbefree.org | sudo sh
+```
 
-# Criar um cliente e anotar PORTA_BSBF + UUID_DO_CLIENTE
+Criar um cliente e anotar **porta** + **UUID**:
+
+```bash
 sudo bsbf-add-client 0
+```
 
-# Descobrir o IP público e liberar a porta
+Exemplo de saída:
+
+```text
+Porta: 16384
+UUID: 61e76964-ebdb-410b-a231-2dd6e2687a71
+```
+
+IP público e firewall:
+
+```bash
 curl -4 ifconfig.me
 sudo ufw allow PORTA_BSBF/tcp
+sudo ufw reload
 ```
 
-### No Raspberry Pi
-
-```bash
-curl -fsSL cld.bondingshouldbefree.org | sudo sh -s -- \
-  --server-ipv4 IP_PUBLICO_DA_VPS \
-  --server-port PORTA_BSBF \
-  --uuid UUID_DO_CLIENTE
-
-sudo systemctl status bsbf-mptcp --no-pager
-```
-
-| Verificação | Como |
-|-------------|------|
-| Monitor | <http://localhost:8080/> |
-| Interfaces | `ip addr` |
-| Endpoints MPTCP | `ip mptcp endpoint show` |
-
-**Objetivo no app (bonding automático):** detectar Wi‑Fi e 4G, descobrir interfaces e IPs sem hardcodar nomes como `wwan0`/`usb0`, e adicionar/remover subflows MPTCP conforme os modems entram ou saem — deixando o BSBF fazer o bonding. A publicação SRT do Pi-IRL permanece a mesma.
+Substitua `PORTA_BSBF` pela porta retornada (ex.: `16384`).
 
 ---
 
-## Instalar o Pi-IRL (Raspberry Pi)
+## No Raspberry Pi
 
-### Requisitos
-
-- Raspberry Pi 4 (testado no Model B 4 GB)  
-- Raspberry Pi OS 64-bit e sessão gráfica  
-- Câmera e microfone USB  
-- FFmpeg no `PATH`  
-- VPS com MediaMTX  
-- Internet  
-
-### Passo a passo
+### 1. GStreamer + ferramentas
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip ffmpeg v4l-utils alsa-utils git
+sudo apt install -y \
+  gstreamer1.0-tools gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+  v4l-utils alsa-utils \
+  python3 python3-venv python3-pip git
+```
 
+Conferir:
+
+```bash
+gst-launch-1.0 --version
+gst-inspect-1.0 srtsink
+v4l2-ctl --list-devices
+arecord -l
+```
+
+### 2. Pi-IRL
+
+```bash
 git clone https://github.com/higorch/pi-irl.git
 cd pi-irl
 
@@ -134,37 +116,38 @@ chmod +x install-desktop-shortcut.sh start-pi-irl.sh
 ./install-desktop-shortcut.sh
 ```
 
-Depois abra pelo ícone **Pi-IRL** na Área de Trabalho (ou `python -m app.main`).
+Abra pelo ícone **Pi-IRL** ou `python -m app.main`.
 
-### Conferir câmera, microfone e FFmpeg
+No app: Host = IP/domínio da VPS · Porta SRT `8890` · Stream ID `irl` → **Iniciar transmissão**.
+
+No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`.
+
+### 3. Bonding BSBF (opcional — cliente)
+
+Use o IP, a porta e o UUID gerados na VPS:
 
 ```bash
-v4l2-ctl --list-devices && ls /dev/video*
-arecord -l
-ffmpeg -version
+curl -fsSL cld.bondingshouldbefree.org | sudo sh -s -- \
+  --server-ipv4 IP_PUBLICO_DA_VPS \
+  --server-port PORTA_BSBF \
+  --uuid UUID_DO_CLIENTE
 ```
 
-### Configurar e transmitir
+Verificar:
 
-| Campo | Exemplo |
-|-------|---------|
-| Host URL/IP | `IP_OU_DOMINIO_DA_VPS` |
-| Porta SRT | `8890` |
-| Stream ID | `irl` |
-| Câmera | `/dev/video0` |
-| Microfone | `hw:3,0` |
-| Resolução | `1280x720` |
-| FPS / bitrate | `30` / `2500 kbps` (automáticos na UI) |
+```bash
+sudo systemctl status bsbf-mptcp --no-pager
+```
 
-1. Clique em **Iniciar transmissão**  
-2. Copie o **RTSP** mostrado no app  
-3. No OBS: Fonte → Media Source → cole, por exemplo `rtsp://IP_OU_DOMINIO_DA_VPS:8554/irl`
+Monitor: <http://localhost:8080/>
+
+A publicação SRT do Pi-IRL não muda — o bonding só estabiliza o caminho até a VPS.
 
 ---
 
-## Windows (desenvolvimento)
+## Windows (só desenvolvimento da UI)
 
-Útil para testar a interface no PC. A captura usa DirectShow; o alvo de produção continua sendo o Raspberry Pi.
+Instale o [GStreamer MSVC](https://gstreamer.freedesktop.org/download/) (plugins good/bad/ugly/libav) e coloque o `bin` no `PATH`.
 
 ```powershell
 git clone https://github.com/higorch/pi-irl.git
@@ -172,9 +155,8 @@ cd pi-irl
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python -m app.main
 ```
-
-Abra com duplo clique em `start-pi-irl.bat` ou `python -m app.main`.
 
 ---
 
@@ -182,11 +164,11 @@ Abra com duplo clique em `start-pi-irl.bat` ou `python -m app.main`.
 
 | Sintoma | O que fazer |
 |---------|-------------|
-| FFmpeg não encontrado | Instalar FFmpeg e garantir o `PATH` |
-| App não abre no Pi | Usar desktop ou VNC (precisa de interface gráfica) |
-| Atalho não executa | Rodar de novo `./install-desktop-shortcut.sh` e confiar no atalho |
+| GStreamer / `srtsink` ausente | Reinstalar os pacotes `gstreamer1.0-*` acima |
+| MediaMTX offline | Conferir se `./mediamtx` está rodando; liberar `8890/udp` e `8554/tcp` |
+| OBS sem vídeo | Conferir Stream ID, `rtsp://IP:8554/...` e status **Ao vivo** no Pi-IRL |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |
-| OBS sem vídeo | Conferir Stream ID, porta `8554` e status **Ao vivo** no Pi-IRL |
+| App não abre no Pi | Precisa de sessão gráfica (desktop ou VNC) |
 
 ---
 
