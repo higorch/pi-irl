@@ -36,12 +36,12 @@ class StreamConfig:
     stream_id: str = "irl"
     camera: str = ""
     resolution: str = "1280x720"
-    fps: int = 30
-    bitrate_kbps: int = 2500
+    fps: int = 24
+    bitrate_kbps: int = 4000
     microphone: str = ""
     audio_channels: int = 1
     sample_rate: int = 48000
-    gop: int = 60
+    gop: int = 48
 
     def build_srt_url(self) -> str:
         """Monta a URL SRT dinamicamente a partir de host, porta e stream id."""

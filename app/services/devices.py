@@ -13,7 +13,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class DeviceInfo:
-    """Dispositivo de captura com rótulo amigável e valor usado pelo GStreamer."""
+    """Dispositivo de captura com rótulo amigável e valor usado pelo FFmpeg."""
 
     label: str
     value: str

@@ -1,1 +1,1 @@
-"""Pi-IRL — transmissão IRL via GStreamer/SRT."""
+"""Pi-IRL — transmissão IRL via FFmpeg/SRT."""

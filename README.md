@@ -2,14 +2,14 @@
 
 [![GitHub](https://img.shields.io/badge/GitHub-higorch%2Fpi--irl-181717?logo=github&logoColor=white)](https://github.com/higorch/pi-irl) [![License](https://img.shields.io/badge/License-Apache_2.0-D22128?logo=apache&logoColor=white)](LICENSE) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%204-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/)
 
-Transmissão IRL no Raspberry Pi: câmera + microfone → **GStreamer** → **SRT** → **MediaMTX** (VPS) → **RTSP** / OBS.
+Transmissão IRL no Raspberry Pi: câmera + microfone → **FFmpeg** → **SRT** → **MediaMTX** (VPS) → **RTSP** / OBS.
 
 **Testado em:** Raspberry Pi 4 Model B 4 GB · Raspberry Pi OS 64-bit.
 
 ```text
 Câmera + Microfone
         ↓
-   Pi-IRL / GStreamer
+   Pi-IRL / FFmpeg
         ↓
    SRT  (+ BSBF opcional)
         ↓
@@ -21,7 +21,7 @@ Câmera + Microfone
 | Onde | O que roda |
 |------|------------|
 | **VPS** | MediaMTX · BSBF Server (opcional) |
-| **Raspberry Pi** | Pi-IRL · GStreamer · BSBF Client (opcional) |
+| **Raspberry Pi** | Pi-IRL · FFmpeg · BSBF Client (opcional) |
 
 Sem bonding o fluxo já funciona. O BSBF só agrega Wi‑Fi + 4G (MPTCP) quando a internet do Pi é instável.
 
@@ -211,20 +211,12 @@ Substitua `PORTA_BSBF` pela porta retornada (ex.: `16384`).
 
 ## No Raspberry Pi
 
-### 1. GStreamer + ferramentas
-
-Só o necessário para o pipeline IRL (V4L2 + ALSA → x264/AAC → SRT):
+### 1. FFmpeg + ferramentas
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  gstreamer1.0-tools \
-  gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad \
-  gstreamer1.0-plugins-ugly \
-  gstreamer1.0-libav \
-  gstreamer1.0-alsa \
+  ffmpeg \
   v4l-utils alsa-utils \
   python3 python3-venv python3-pip git
 ```
@@ -232,7 +224,7 @@ sudo apt-get install -y \
 Conferir:
 
 ```bash
-gst-inspect-1.0 srtsink x264enc avenc_aac v4l2src alsasrc
+ffmpeg -version
 v4l2-ctl --list-devices
 arecord -l
 ```
@@ -255,13 +247,13 @@ Abra pelo ícone **Pi-IRL** ou `python -m app.main`.
 
 No app: Host = IP/domínio da VPS · Porta SRT `8890` · Stream ID `irl` → **Iniciar transmissão**.
 
-No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`.
+No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl` (buffer de rede ~2–5 s).
 
 ### Conferir webcam e testar o stream
 
-Troque `IP_VPS`, `/dev/video0` e `hw:3,0` nos comandos. MediaMTX precisa estar rodando na VPS.
+Troque `IP_VPS`, `/dev/video0` e `hw:3,0`. MediaMTX precisa estar rodando.
 
-No PC, para ler qualquer um dos testes:
+No PC:
 
 ```bash
 ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl
@@ -273,66 +265,31 @@ ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl
 v4l2-ctl --device /dev/video0 --list-formats-ext
 ```
 
-Precisa ter **MJPG** para o pipeline atual.
+Precisa ter **MJPG** (Motion-JPEG).
 
-#### 2. Pré-visualizar MJPEG local
+#### 2. Testar vídeo + áudio (SRT → MediaMTX)
 
-```bash
-gst-launch-1.0 -v v4l2src device=/dev/video0 ! \
-  image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! autovideosink
-```
-
-Se a janela abrir, a webcam está ok nesse modo.
-
-#### 3. Testar só vídeo (SRT → MediaMTX)
+Comando alinhado ao app (**720p24**, qualidade):
 
 ```bash
-gst-launch-1.0 -e -v \
-  v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
-  x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=30 ! video/x-h264,profile=baseline ! \
-  h264parse config-interval=1 ! mpegtsmux ! \
-  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
+ffmpeg -hide_banner -loglevel info \
+  -f v4l2 -input_format mjpeg -video_size 1280x720 -framerate 24 -i /dev/video0 \
+  -f alsa -thread_queue_size 512 -i hw:3,0 \
+  -r 24 \
+  -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -pix_fmt yuv420p \
+  -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
+  -b:v 4000k -maxrate 4600k -bufsize 8000k \
+  -c:a aac -ar 48000 -ac 1 -b:a 160k \
+  -f mpegts "srt://IP_VPS:8890?mode=caller&streamid=publish:irl"
 ```
 
-No `ffplay` deve aparecer `Video: h264`.
-
-#### 4. Testar só áudio (SRT → MediaMTX)
-
-```bash
-gst-launch-1.0 -e -v \
-  alsasrc device=hw:3,0 ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate=48000 ! \
-  avenc_aac bitrate=128000 ! aacparse ! mpegtsmux ! \
-  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
-```
-
-No `ffplay` deve aparecer `Audio: aac` (e você deve ouvir o microfone).
-
-#### 5. Testar vídeo + áudio juntos (SRT → MediaMTX)
-
-No Pi 4, `queue min-threshold-time` com duas fontes live costuma gerar erro de clock (`impossible to configure latency`). Use este pipeline: ALSA sem clock próprio e `srtsink sync=false`.
-
-```bash
-gst-launch-1.0 -e -v \
-  v4l2src device=/dev/video0 do-timestamp=true ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
-  x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=30 ! video/x-h264,profile=baseline ! \
-  h264parse config-interval=1 ! queue ! mux. \
-  alsasrc device=hw:3,0 provide-clock=false do-timestamp=true ! audioconvert ! audioresample ! \
-  audio/x-raw,channels=1,rate=48000 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
-  mpegtsmux name=mux alignment=7 ! \
-  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false sync=false
-```
-
-Espere ~5 s (para vídeo e áudio entrarem no MediaMTX) e só então rode o `ffplay` ou ative a fonte no OBS. Devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
+No `ffplay` devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
 
 | Resultado | Significado |
 |-----------|-------------|
-| Só vídeo ok + só áudio ok, juntos só áudio | Player conectou cedo — espere ~5 s e reconecte |
-| Erro de clock / latency | Não use `min-threshold-time`; use o comando desta seção |
-| Só áudio ok, vídeo sozinho falha | Encode/câmera/`x264enc` |
-| Vídeo + áudio juntos ok | Pipeline ok — no app use `640x480` @ 30 |
-| Erro no `gst-launch` | Ver a mensagem do elemento que falhou |
-
-**OBS:** se o `ffplay` mostrar as duas streams e o OBS não, recrie/reative a Fonte de mídia depois dos ~5 s; use `rtsp://IP_VPS:8554/irl` e buffer de rede ~2–5 s.
+| Vídeo + áudio | OK — app usa **1280x720 @ 24 fps** / ~4000 kbps |
+| Só áudio / sem vídeo | Webcam sem MJPEG em 720p — veja `v4l2-ctl --list-formats-ext` |
+| Erro no `ffmpeg` | Device ocupado ou formato inválido |
 
 ### 3. Bonding BSBF (opcional — cliente)
 
@@ -359,9 +316,10 @@ A publicação SRT do Pi-IRL não muda — o bonding só estabiliza o caminho at
 
 ## Windows (só desenvolvimento da UI)
 
-Instale o [GStreamer MSVC](https://gstreamer.freedesktop.org/download/) (plugins good/bad/ugly/libav) e coloque o `bin` no `PATH`.
+Instale o [FFmpeg](https://ffmpeg.org/download.html) e coloque no `PATH`. A captura usa DirectShow; o alvo de produção é o Raspberry Pi.
 
 ```powershell
+ffmpeg -version
 git clone https://github.com/higorch/pi-irl.git
 cd pi-irl
 python -m venv .venv
@@ -376,9 +334,9 @@ python -m app.main
 
 | Sintoma | O que fazer |
 |---------|-------------|
-| Plugin GStreamer ausente | Rodar de novo o `apt-get install` da seção do Pi |
+| FFmpeg não encontrado | `sudo apt-get install -y ffmpeg` e conferir o `PATH` |
 | MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` · liberar `8890/udp`, `8000/udp`, `8001/udp`, `8554/tcp` |
-| OBS / ffplay só com áudio | Webcam sem MJPEG nessa res/FPS; ver `v4l2-ctl --list-formats-ext` e a seção de teste |
+| OBS / ffplay sem vídeo | Conferir MJPEG da webcam, Stream ID e status **Ao vivo** no Pi-IRL |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |
 | App não abre no Pi | Precisa de sessão gráfica (desktop ou VNC) |
 
