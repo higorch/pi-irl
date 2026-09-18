@@ -257,6 +257,41 @@ No app: Host = IP/domínio da VPS · Porta SRT `8890` · Stream ID `irl` → **I
 
 No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`.
 
+### Conferir webcam e testar o stream
+
+Formatos da câmera (precisa ter **MJPG** para o pipeline atual):
+
+```bash
+v4l2-ctl --device /dev/video0 --list-formats-ext
+```
+
+Pré-visualizar MJPEG local:
+
+```bash
+gst-launch-1.0 -v v4l2src device=/dev/video0 ! \
+  image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! autovideosink
+```
+
+Publicar SRT manualmente (troque `IP_VPS`, `/dev/video0` e `hw:3,0`):
+
+```bash
+gst-launch-1.0 -e -v \
+  v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
+  x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=60 ! video/x-h264,profile=baseline ! h264parse ! queue ! mux. \
+  alsasrc device=hw:3,0 ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate=48000 ! \
+  avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
+  mpegtsmux name=mux alignment=7 ! \
+  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
+```
+
+Ler no PC (ffplay ou OBS):
+
+```bash
+ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl
+```
+
+Se o ffplay mostrar só `Audio: aac` e nenhum `Video: h264`, o ramo de vídeo da webcam não está entrando no stream (formato/resolução incompatível com MJPEG).
+
 ### 3. Bonding BSBF (opcional — cliente)
 
 Use o IP, a porta e o UUID gerados na VPS:
@@ -301,7 +336,7 @@ python -m app.main
 |---------|-------------|
 | Plugin GStreamer ausente | Rodar de novo o `apt-get install` da seção do Pi |
 | MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` · liberar `8890/udp`, `8000/udp`, `8001/udp`, `8554/tcp` |
-| OBS sem vídeo | Conferir Stream ID, `rtsp://IP:8554/...` e status **Ao vivo** no Pi-IRL |
+| OBS / ffplay só com áudio | Webcam sem MJPEG nessa res/FPS; ver `v4l2-ctl --list-formats-ext` e a seção de teste |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |
 | App não abre no Pi | Precisa de sessão gráfica (desktop ou VNC) |
 
