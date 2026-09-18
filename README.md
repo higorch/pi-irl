@@ -259,38 +259,51 @@ No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`.
 
 ### Conferir webcam e testar o stream
 
-Formatos da câmera (precisa ter **MJPG** para o pipeline atual):
+#### 1. Formatos da câmera
+
+Precisa ter **MJPG** para o pipeline atual:
 
 ```bash
 v4l2-ctl --device /dev/video0 --list-formats-ext
 ```
 
-Pré-visualizar MJPEG local:
+#### 2. Pré-visualizar MJPEG local
 
 ```bash
 gst-launch-1.0 -v v4l2src device=/dev/video0 ! \
   image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! autovideosink
 ```
 
-Publicar SRT manualmente (troque `IP_VPS`, `/dev/video0` e `hw:3,0`):
+Se a janela abrir, a webcam está ok nesse modo.
+
+#### 3. Teste do pipeline completo (SRT → MediaMTX)
+
+Com o MediaMTX rodando na VPS. Troque `IP_VPS`, `/dev/video0` e `hw:3,0`:
 
 ```bash
 gst-launch-1.0 -e -v \
   v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
-  x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=60 ! video/x-h264,profile=baseline ! h264parse ! queue ! mux. \
+  x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=30 ! video/x-h264,profile=baseline ! \
+  h264parse config-interval=1 ! queue ! mux. \
   alsasrc device=hw:3,0 ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate=48000 ! \
   avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
   mpegtsmux name=mux alignment=7 ! \
   srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
 ```
 
-Ler no PC (ffplay ou OBS):
+No PC (com o comando acima rodando no Pi):
 
 ```bash
 ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl
 ```
 
-Se o ffplay mostrar só `Audio: aac` e nenhum `Video: h264`, o ramo de vídeo da webcam não está entrando no stream (formato/resolução incompatível com MJPEG).
+O ffplay deve listar **duas** streams: `Video: h264` e `Audio: aac`.
+
+| Resultado | Significado |
+|-----------|-------------|
+| Vídeo + áudio | Pipeline ok — no app use a mesma res/FPS (`640x480` @ 30) |
+| Só `Audio: aac` | Vídeo não entrou no MediaMTX (SPS/PPS / mux / encode) |
+| Erro no `gst-launch` | Ver a mensagem do elemento que falhou (`x264enc`, câmera, etc.) |
 
 ### 3. Bonding BSBF (opcional — cliente)
 
