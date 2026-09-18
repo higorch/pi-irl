@@ -67,14 +67,17 @@ mkdir -p /etc/mediamtx
 cd /etc/mediamtx
 wget https://raw.githubusercontent.com/bluenviron/mediamtx/v1.21.0/mediamtx.yml
 
-# Desativa protocolos que o Pi-IRL não usa (mantém SRT + RTSP para o OBS)
-sed -i 's/^rtmp: true/rtmp: false/' /etc/mediamtx/mediamtx.yml
-sed -i 's/^hls: true/hls: false/' /etc/mediamtx/mediamtx.yml
-sed -i 's/^webrtc: true/webrtc: false/' /etc/mediamtx/mediamtx.yml
-sed -i 's/^moq: true/moq: false/' /etc/mediamtx/mediamtx.yml
+sed -i \
+  -e 's/^rtsp: .*/rtsp: true/' \
+  -e 's/^srt: .*/srt: true/' \
+  -e 's/^rtmp: .*/rtmp: false/' \
+  -e 's/^hls: .*/hls: false/' \
+  -e 's/^webrtc: .*/webrtc: false/' \
+  -e 's/^moq: .*/moq: false/' \
+  /etc/mediamtx/mediamtx.yml
 ```
 
-> **Importante:** deixe `rtsp: true` e `srt: true`. Sem RTSP o OBS não consegue ler o stream.
+Ativa **SRT** (entrada do Pi) e **RTSP** (saída para o OBS). Desliga RTMP, HLS, WebRTC e MoQ.
 
 #### Testar
 
@@ -110,6 +113,19 @@ systemctl daemon-reload
 systemctl enable --now mediamtx
 ```
 
+Se já estiver instalado e só mudar o YAML:
+
+```bash
+sed -i \
+  -e 's/^rtsp: .*/rtsp: true/' \
+  -e 's/^srt: .*/srt: true/' \
+  -e 's/^rtmp: .*/rtmp: false/' \
+  -e 's/^hls: .*/hls: false/' \
+  -e 's/^webrtc: .*/webrtc: false/' \
+  -e 's/^moq: .*/moq: false/' \
+  /etc/mediamtx/mediamtx.yml && systemctl restart mediamtx
+```
+
 #### Ver status
 
 ```bash
@@ -123,7 +139,40 @@ systemctl is-active mediamtx
 journalctl -u mediamtx -f
 ```
 
-Liberar no firewall: `8890/udp` (SRT) e `8554/tcp` (RTSP).
+#### Portas e firewall
+
+O MediaMTX deve escutar:
+
+| Porta | Protocolo | Uso |
+|------:|-----------|-----|
+| `8890` | **UDP** | SRT (Pi → VPS) |
+| `8554` | **TCP** | RTSP (OBS) |
+| `8000` | **UDP** | RTP (RTSP) |
+| `8001` | **UDP** | RTCP (RTSP) |
+
+```bash
+ss -ulnp | grep mediamtx
+ss -tlnp | grep mediamtx
+```
+
+Exemplo esperado:
+
+```text
+udp UNCONN 0 0 *:8890 *:* users:(("mediamtx",...))
+udp UNCONN 0 0 *:8000 *:* users:(("mediamtx",...))
+udp UNCONN 0 0 *:8001 *:* users:(("mediamtx",...))
+tcp LISTEN 0 4096 *:8554 *:* users:(("mediamtx",...))
+```
+
+Liberar no firewall:
+
+```bash
+ufw allow 8890/udp
+ufw allow 8000/udp
+ufw allow 8001/udp
+ufw allow 8554/tcp
+ufw reload
+```
 
 | Stream ID | Pi publica | OBS lê |
 |-----------|------------|--------|
@@ -251,7 +300,7 @@ python -m app.main
 | Sintoma | O que fazer |
 |---------|-------------|
 | Plugin GStreamer ausente | Rodar de novo o `apt-get install` da seção do Pi |
-| MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` · liberar `8890/udp` e `8554/tcp` |
+| MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` · liberar `8890/udp`, `8000/udp`, `8001/udp`, `8554/tcp` |
 | OBS sem vídeo | Conferir Stream ID, `rtsp://IP:8554/...` e status **Ao vivo** no Pi-IRL |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |
 | App não abre no Pi | Precisa de sessão gráfica (desktop ou VNC) |
