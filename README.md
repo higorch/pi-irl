@@ -309,28 +309,30 @@ No `ffplay` deve aparecer `Audio: aac` (e você deve ouvir o microfone).
 
 #### 5. Testar vídeo + áudio juntos (SRT → MediaMTX)
 
-Se o áudio chegar antes do vídeo, o MediaMTX pode abrir o path só com AAC. Por isso o áudio é atrasado ~2s (`min-threshold-time`) para o H.264 (SPS/PPS) entrar primeiro:
+No Pi 4, `queue min-threshold-time` com duas fontes live costuma gerar erro de clock (`impossible to configure latency`). Use este pipeline: ALSA sem clock próprio e `srtsink sync=false`.
 
 ```bash
 gst-launch-1.0 -e -v \
-  v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
+  v4l2src device=/dev/video0 do-timestamp=true ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
   x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=30 ! video/x-h264,profile=baseline ! \
   h264parse config-interval=1 ! queue ! mux. \
-  alsasrc device=hw:3,0 ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate=48000 ! \
-  avenc_aac bitrate=128000 ! aacparse ! \
-  queue min-threshold-time=2000000000 ! mux. \
+  alsasrc device=hw:3,0 provide-clock=false do-timestamp=true ! audioconvert ! audioresample ! \
+  audio/x-raw,channels=1,rate=48000 ! avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
   mpegtsmux name=mux alignment=7 ! \
-  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
+  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false sync=false
 ```
 
-Espere ~3s e rode o `ffplay`. Devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
+Espere ~5 s (para vídeo e áudio entrarem no MediaMTX) e só então rode o `ffplay` ou ative a fonte no OBS. Devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
 
 | Resultado | Significado |
 |-----------|-------------|
-| Só vídeo ok + só áudio ok, juntos só áudio | Áudio chegou antes — use o atraso acima |
+| Só vídeo ok + só áudio ok, juntos só áudio | Player conectou cedo — espere ~5 s e reconecte |
+| Erro de clock / latency | Não use `min-threshold-time`; use o comando desta seção |
 | Só áudio ok, vídeo sozinho falha | Encode/câmera/`x264enc` |
 | Vídeo + áudio juntos ok | Pipeline ok — no app use `640x480` @ 30 |
 | Erro no `gst-launch` | Ver a mensagem do elemento que falhou |
+
+**OBS:** se o `ffplay` mostrar as duas streams e o OBS não, recrie/reative a Fonte de mídia depois dos ~5 s; use `rtsp://IP_VPS:8554/irl` e buffer de rede ~2–5 s.
 
 ### 3. Bonding BSBF (opcional — cliente)
 
