@@ -259,13 +259,21 @@ No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`.
 
 ### Conferir webcam e testar o stream
 
-#### 1. Formatos da câmera
+Troque `IP_VPS`, `/dev/video0` e `hw:3,0` nos comandos. MediaMTX precisa estar rodando na VPS.
 
-Precisa ter **MJPG** para o pipeline atual:
+No PC, para ler qualquer um dos testes:
+
+```bash
+ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl
+```
+
+#### 1. Formatos da câmera
 
 ```bash
 v4l2-ctl --device /dev/video0 --list-formats-ext
 ```
+
+Precisa ter **MJPG** para o pipeline atual.
 
 #### 2. Pré-visualizar MJPEG local
 
@@ -276,9 +284,30 @@ gst-launch-1.0 -v v4l2src device=/dev/video0 ! \
 
 Se a janela abrir, a webcam está ok nesse modo.
 
-#### 3. Teste do pipeline completo (SRT → MediaMTX)
+#### 3. Testar só vídeo (SRT → MediaMTX)
 
-Com o MediaMTX rodando na VPS. Troque `IP_VPS`, `/dev/video0` e `hw:3,0`:
+```bash
+gst-launch-1.0 -e -v \
+  v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
+  x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=30 ! video/x-h264,profile=baseline ! \
+  h264parse config-interval=1 ! mpegtsmux ! \
+  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
+```
+
+No `ffplay` deve aparecer `Video: h264`.
+
+#### 4. Testar só áudio (SRT → MediaMTX)
+
+```bash
+gst-launch-1.0 -e -v \
+  alsasrc device=hw:3,0 ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate=48000 ! \
+  avenc_aac bitrate=128000 ! aacparse ! mpegtsmux ! \
+  srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
+```
+
+No `ffplay` deve aparecer `Audio: aac` (e você deve ouvir o microfone).
+
+#### 5. Testar vídeo + áudio juntos (SRT → MediaMTX)
 
 ```bash
 gst-launch-1.0 -e -v \
@@ -291,19 +320,14 @@ gst-launch-1.0 -e -v \
   srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
 ```
 
-No PC (com o comando acima rodando no Pi):
-
-```bash
-ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl
-```
-
-O ffplay deve listar **duas** streams: `Video: h264` e `Audio: aac`.
+No `ffplay` devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
 
 | Resultado | Significado |
 |-----------|-------------|
-| Vídeo + áudio | Pipeline ok — no app use a mesma res/FPS (`640x480` @ 30) |
-| Só `Audio: aac` | Vídeo não entrou no MediaMTX (SPS/PPS / mux / encode) |
-| Erro no `gst-launch` | Ver a mensagem do elemento que falhou (`x264enc`, câmera, etc.) |
+| Só vídeo ok, juntos só áudio | Problema no mux A/V |
+| Só áudio ok, vídeo falha | Encode/câmera/`x264enc` |
+| Vídeo + áudio juntos ok | Pipeline ok — no app use `640x480` @ 30 |
+| Erro no `gst-launch` | Ver a mensagem do elemento que falhou |
 
 ### 3. Bonding BSBF (opcional — cliente)
 
