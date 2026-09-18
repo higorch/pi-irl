@@ -29,17 +29,98 @@ Sem bonding o fluxo já funciona. O BSBF só agrega Wi‑Fi + 4G (MPTCP) quando 
 
 ## Na VPS
 
-### 1. MediaMTX
+### 1. MediaMTX v1.21.0
 
 Servidor de mídia: recebe o SRT do Pi e entrega RTSP para o OBS.  
 Doc oficial: [Introduction](https://mediamtx.org/docs/kickoff/introduction) · [Install](https://mediamtx.org/docs/kickoff/install)
 
-1. Baixe o binário da sua arquitetura em [Releases](https://github.com/bluenviron/mediamtx/releases) (ex.: `mediamtx_v1.xx.x_linux_amd64.tar.gz`).
-2. Extraia e inicie:
+Rodar na VPS como root (Linux amd64).
+
+#### Remover instalação anterior
 
 ```bash
-tar -xzf mediamtx_v*_linux_amd64.tar.gz
-./mediamtx
+systemctl stop mediamtx 2>/dev/null || true
+systemctl disable mediamtx 2>/dev/null || true
+rm -f /etc/systemd/system/mediamtx.service
+systemctl daemon-reload
+rm -f /usr/local/bin/mediamtx
+rm -rf /etc/mediamtx
+rm -f /root/mediamtx_v1.21.0_linux_*.tar.gz
+```
+
+#### Instalar
+
+```bash
+cd /root
+wget https://github.com/bluenviron/mediamtx/releases/download/v1.21.0/mediamtx_v1.21.0_linux_amd64.tar.gz
+tar -xzf mediamtx_v1.21.0_linux_amd64.tar.gz
+mv mediamtx /usr/local/bin/mediamtx
+chmod +x /usr/local/bin/mediamtx
+
+mediamtx --version
+```
+
+#### Configuração
+
+```bash
+mkdir -p /etc/mediamtx
+cd /etc/mediamtx
+wget https://raw.githubusercontent.com/bluenviron/mediamtx/v1.21.0/mediamtx.yml
+
+# Desativa protocolos que o Pi-IRL não usa (mantém SRT + RTSP para o OBS)
+sed -i 's/^rtmp: true/rtmp: false/' /etc/mediamtx/mediamtx.yml
+sed -i 's/^hls: true/hls: false/' /etc/mediamtx/mediamtx.yml
+sed -i 's/^webrtc: true/webrtc: false/' /etc/mediamtx/mediamtx.yml
+sed -i 's/^moq: true/moq: false/' /etc/mediamtx/mediamtx.yml
+```
+
+> **Importante:** deixe `rtsp: true` e `srt: true`. Sem RTSP o OBS não consegue ler o stream.
+
+#### Testar
+
+```bash
+/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
+```
+
+Confirme que sobe sem erro e saia com `Ctrl+C`.
+
+#### Criar serviço
+
+```bash
+cat > /etc/systemd/system/mediamtx.service <<'EOF'
+[Unit]
+Description=MediaMTX
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+#### Ativar
+
+```bash
+systemctl daemon-reload
+systemctl enable --now mediamtx
+```
+
+#### Ver status
+
+```bash
+systemctl status mediamtx --no-pager
+systemctl is-active mediamtx
+```
+
+#### Ver logs
+
+```bash
+journalctl -u mediamtx -f
 ```
 
 Liberar no firewall: `8890/udp` (SRT) e `8554/tcp` (RTSP).
@@ -170,7 +251,7 @@ python -m app.main
 | Sintoma | O que fazer |
 |---------|-------------|
 | Plugin GStreamer ausente | Rodar de novo o `apt-get install` da seção do Pi |
-| MediaMTX offline | Conferir se `./mediamtx` está rodando; liberar `8890/udp` e `8554/tcp` |
+| MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` · liberar `8890/udp` e `8554/tcp` |
 | OBS sem vídeo | Conferir Stream ID, `rtsp://IP:8554/...` e status **Ao vivo** no Pi-IRL |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |
 | App não abre no Pi | Precisa de sessão gráfica (desktop ou VNC) |
