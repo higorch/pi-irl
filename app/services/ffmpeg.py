@@ -8,6 +8,7 @@ import shutil
 from PySide6.QtCore import QObject, QProcess, Signal
 
 from app.models.stream_config import StreamConfig
+from app.services.media_profile import MediaProfile, probe_best_profile
 
 
 class FFmpegService(QObject):
@@ -38,12 +39,24 @@ class FFmpegService(QObject):
     def is_running(self) -> bool:
         return self._process.state() != QProcess.ProcessState.NotRunning
 
-    def build_command(self, config: StreamConfig) -> list[str]:
+    def build_command(
+        self,
+        config: StreamConfig,
+        profile: MediaProfile | None = None,
+    ) -> list[str]:
         """Monta a lista de argumentos do FFmpeg conforme a plataforma."""
+        if profile is None:
+            profile = probe_best_profile(
+                config.camera,
+                config.microphone,
+                output_resolution=config.resolution,
+                output_fps=config.fps,
+                bitrate_kbps=config.bitrate_kbps,
+            )
         system = platform.system()
         if system == "Windows":
-            return self._build_windows_command(config)
-        return self._build_linux_command(config)
+            return self._build_windows_command(config, profile)
+        return self._build_linux_command(config, profile)
 
     def start(self, config: StreamConfig) -> None:
         if self.is_running():
@@ -54,7 +67,20 @@ class FFmpegService(QObject):
             self.error_occurred.emit("FFmpeg não encontrado.")
             return
 
-        args = self.build_command(config)
+        profile = probe_best_profile(
+            config.camera,
+            config.microphone,
+            output_resolution=config.resolution,
+            output_fps=config.fps,
+            bitrate_kbps=config.bitrate_kbps,
+        )
+        self.log_line.emit(f"Perfil: {profile.summary}")
+
+        config.gop = profile.gop
+        config.sample_rate = profile.sample_rate
+        config.audio_channels = profile.audio_channels
+
+        args = self.build_command(config, profile)
         program = args[0]
         program_args = args[1:]
 
@@ -73,12 +99,27 @@ class FFmpegService(QObject):
             self._process.kill()
             self._process.waitForFinished(3000)
 
-    def _encode_args(self, config: StreamConfig) -> list[str]:
-        """libx264 + AAC otimizados para 720p24 IRL (qualidade + latência baixa)."""
-        maxrate = int(config.bitrate_kbps * 1.15)
-        bufsize = config.bitrate_kbps * 2
-        audio_bitrate = "160k"
+    def _encode_args(
+        self,
+        config: StreamConfig,
+        profile: MediaProfile,
+        *,
+        audio_input: int,
+    ) -> list[str]:
+        maxrate = int(profile.bitrate_kbps * 1.15)
+        bufsize = profile.bitrate_kbps * 2
+        vf = (
+            f"fps={profile.output_fps},"
+            f"scale={profile.output_width}:{profile.output_height},"
+            "format=yuv420p"
+        )
         return [
+            "-map",
+            "0:v:0",
+            "-map",
+            f"{audio_input}:a:0",
+            "-vf",
+            vf,
             "-c:v",
             "libx264",
             "-preset",
@@ -87,18 +128,16 @@ class FFmpegService(QObject):
             "zerolatency",
             "-profile:v",
             "main",
-            "-pix_fmt",
-            "yuv420p",
             "-g",
-            str(config.gop),
+            str(profile.gop),
             "-keyint_min",
-            str(config.gop),
+            str(profile.gop),
             "-sc_threshold",
             "0",
             "-bf",
             "0",
             "-b:v",
-            f"{config.bitrate_kbps}k",
+            f"{profile.bitrate_kbps}k",
             "-maxrate",
             f"{maxrate}k",
             "-bufsize",
@@ -106,47 +145,57 @@ class FFmpegService(QObject):
             "-c:a",
             "aac",
             "-ar",
-            str(config.sample_rate),
+            str(profile.sample_rate),
             "-ac",
-            str(config.audio_channels),
+            str(profile.audio_channels),
             "-b:a",
-            audio_bitrate,
+            "160k",
             "-f",
             "mpegts",
             config.build_srt_url(),
         ]
 
-    def _build_linux_command(self, config: StreamConfig) -> list[str]:
-        """V4L2 MJPEG + ALSA → libx264 + AAC → MPEG-TS → SRT caller."""
+    def _build_linux_command(
+        self,
+        config: StreamConfig,
+        profile: MediaProfile,
+    ) -> list[str]:
+        """V4L2 + ALSA com formato/tamanho/FPS detectados automaticamente."""
         ffmpeg = self.resolve_ffmpeg_path() or "ffmpeg"
         return [
             ffmpeg,
             "-hide_banner",
             "-loglevel",
             "info",
+            "-fflags",
+            "+genpts",
+            "-thread_queue_size",
+            "512",
             "-f",
             "v4l2",
             "-input_format",
-            "mjpeg",
+            profile.input_format,
             "-video_size",
-            config.resolution,
+            profile.capture_size,
             "-framerate",
-            str(config.fps),
+            str(profile.capture_fps),
             "-i",
             config.camera,
-            "-f",
-            "alsa",
             "-thread_queue_size",
             "512",
+            "-f",
+            "alsa",
             "-i",
             config.microphone,
-            "-r",
-            str(config.fps),
-            *self._encode_args(config),
+            *self._encode_args(config, profile, audio_input=1),
         ]
 
-    def _build_windows_command(self, config: StreamConfig) -> list[str]:
-        """DirectShow (dshow) para testes no Windows."""
+    def _build_windows_command(
+        self,
+        config: StreamConfig,
+        profile: MediaProfile,
+    ) -> list[str]:
+        """DirectShow: deixa o driver escolher o modo; escala/fps no -vf."""
         ffmpeg = self.resolve_ffmpeg_path() or "ffmpeg"
         video = f"video={config.camera}"
         audio = f"audio={config.microphone}"
@@ -155,17 +204,13 @@ class FFmpegService(QObject):
             "-hide_banner",
             "-loglevel",
             "info",
+            "-fflags",
+            "+genpts",
             "-f",
             "dshow",
-            "-framerate",
-            str(config.fps),
-            "-video_size",
-            config.resolution,
             "-i",
             f"{video}:{audio}",
-            "-r",
-            str(config.fps),
-            *self._encode_args(config),
+            *self._encode_args(config, profile, audio_input=0),
         ]
 
     def _on_ready_read(self) -> None:

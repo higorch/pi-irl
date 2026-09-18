@@ -267,29 +267,30 @@ v4l2-ctl --device /dev/video0 --list-formats-ext
 
 Precisa ter **MJPG** (Motion-JPEG).
 
-#### 2. Testar vídeo + áudio (SRT → MediaMTX)
+A captura adapta o formato da webcam ao que você escolhe. Resolução e FPS são selecionáveis (pré-marcados com a melhor opção da câmera). Bitrate vem com padrão sugerido e pode ser alterado.
 
-Comando alinhado ao app (**720p24**, qualidade):
+Teste manual (troque devices/IP):
 
 ```bash
+# Ver modos da câmera
+v4l2-ctl --device /dev/video0 --list-formats-ext
+
+# Publicar (o app monta algo equivalente ao melhor modo detectado)
 ffmpeg -hide_banner -loglevel info \
-  -f v4l2 -input_format mjpeg -video_size 1280x720 -framerate 24 -i /dev/video0 \
-  -f alsa -thread_queue_size 512 -i hw:3,0 \
-  -r 24 \
-  -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -pix_fmt yuv420p \
+  -fflags +genpts \
+  -thread_queue_size 512 -f v4l2 -input_format mjpeg -video_size 1280x720 -framerate 30 -i /dev/video0 \
+  -thread_queue_size 512 -f alsa -i hw:3,0 \
+  -map 0:v:0 -map 1:a:0 \
+  -vf fps=24,scale=1280:720,format=yuv420p \
+  -c:v libx264 -preset veryfast -tune zerolatency -profile:v main \
   -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
   -b:v 4000k -maxrate 4600k -bufsize 8000k \
   -c:a aac -ar 48000 -ac 1 -b:a 160k \
   -f mpegts "srt://IP_VPS:8890?mode=caller&streamid=publish:irl"
 ```
 
-No `ffplay` devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
+No PC: `ffplay -rtsp_transport tcp rtsp://IP_VPS:8554/irl` — deve listar `Video: h264` e `Audio: aac`.
 
-| Resultado | Significado |
-|-----------|-------------|
-| Vídeo + áudio | OK — app usa **1280x720 @ 24 fps** / ~4000 kbps |
-| Só áudio / sem vídeo | Webcam sem MJPEG em 720p — veja `v4l2-ctl --list-formats-ext` |
-| Erro no `ffmpeg` | Device ocupado ou formato inválido |
 
 ### 3. Bonding BSBF (opcional — cliente)
 
@@ -334,7 +335,7 @@ python -m app.main
 
 | Sintoma | O que fazer |
 |---------|-------------|
-| FFmpeg não encontrado | `sudo apt-get install -y ffmpeg` e conferir o `PATH` |
+| FFmpeg código 251 / falha ao iniciar | Webcam sem MJPEG 720p, device em uso ou Host SRT errado; veja o Registro do app |
 | MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` · liberar `8890/udp`, `8000/udp`, `8001/udp`, `8554/tcp` |
 | OBS / ffplay sem vídeo | Conferir MJPEG da webcam, Stream ID e status **Ao vivo** no Pi-IRL |
 | Sem câmera / microfone | `v4l2-ctl` / `arecord -l` e **Procurar dispositivos** no app |

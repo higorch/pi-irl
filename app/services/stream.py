@@ -87,8 +87,14 @@ class StreamService(QObject):
 
         if exit_status == QProcess.ExitStatus.CrashExit or exit_code != 0:
             self._set_status(StreamStatus.ERROR)
+            hint = ""
+            if exit_code in (1, 251, 4294967041):
+                hint = (
+                    " | Dica: confira câmera/mic, se a webcam aceita 1280x720 MJPEG "
+                    "(`v4l2-ctl --list-formats-ext`) e se o Host/SRT da VPS está acessível."
+                )
             self.log_line.emit(
-                f"FFmpeg encerrou inesperadamente (código {exit_code})."
+                f"FFmpeg encerrou inesperadamente (código {exit_code}).{hint}"
             )
         else:
             self._set_status(StreamStatus.OFFLINE)

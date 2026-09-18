@@ -37,6 +37,13 @@ from app.config import load_config, save_config
 from app.models.stream_config import StreamConfig, StreamStatus
 from app.services import devices
 from app.services.ffmpeg import FFmpegService
+from app.services.media_profile import (
+    list_fps_choices,
+    list_resolution_choices,
+    probe_best_profile,
+    recommend_defaults,
+    suggested_bitrate,
+)
 from app.services.stream import StreamService
 from app.ui.styles import APP_STYLESHEET, COMPACT_STYLESHEET
 
@@ -46,14 +53,11 @@ MEDIAMTX_RTSP_PORT = 8554
 MEDIAMTX_RTMP_PORT = 1935
 MEDIAMTX_HLS_PORT = 8888
 
-RESOLUTION_OPTIONS = ("1280x720",)
-
-# Transmissão fixa: 720p24 com bitrate voltado à qualidade (Pi 4)
+# Valores padrão (pré-seleção / fallback)
 AUTO_FPS = 24
 AUTO_BITRATE_KBPS = 4000
-AUTO_GOP = 48  # ~2 s de keyframe a 24 fps
+AUTO_GOP = 48
 AUTO_AUDIO_CHANNELS = 1
-AUTO_AUDIO_BITRATE_K = 160
 
 ARROW_COLOR = "#9aa3b5"
 # Telas ~3.5" (ex.: 480x320) e afins
@@ -443,21 +447,26 @@ class MainWindow(QMainWindow):
 
         self.resolution_combo = SelectBox()
         self.resolution_combo.setEditable(False)
-        for value in RESOLUTION_OPTIONS:
-            self.resolution_combo.addItem(value, value)
 
-        self.fps_info = self._info_value(f"Automático · {AUTO_FPS} fps")
-        self.bitrate_info = self._info_value(f"Automático · {AUTO_BITRATE_KBPS} kbps")
+        self.fps_combo = SelectBox()
+        self.fps_combo.setEditable(False)
+
+        self.bitrate_spin = QSpinBox()
+        self.bitrate_spin.setRange(500, 12000)
+        self.bitrate_spin.setSingleStep(100)
+        self.bitrate_spin.setSuffix(" kbps")
+        self.bitrate_spin.setValue(AUTO_BITRATE_KBPS)
+        self.bitrate_spin.setFixedHeight(self._input_height)
 
         layout.addWidget(self._field("Câmera", camera_input))
-        layout.addWidget(self._field("Resolução", self.resolution_combo))
         layout.addWidget(
             self._row(
-                self._field("FPS", self.fps_info),
-                self._field("Taxa de bits", self.bitrate_info),
-                stretches=[1, 1],
+                self._field("Resolução", self.resolution_combo),
+                self._field("FPS", self.fps_combo),
+                stretches=[2, 1],
             )
         )
+        layout.addWidget(self._field("Taxa de bits", self.bitrate_spin))
         return card
 
     def _build_audio_card(self) -> QFrame:
@@ -544,17 +553,81 @@ class MainWindow(QMainWindow):
         if current_mic and any(m.value == current_mic for m in microphones):
             self._select_combo_value(self.microphone_combo, current_mic)
 
+        self._refresh_video_options(prefer_recommend=True)
+
+    def _refresh_video_options(self, *, prefer_recommend: bool = False) -> None:
+        """Preenche resolução/FPS e pré-seleciona o melhor (ou mantém a escolha atual)."""
+        camera = str(self._combo_value(self.camera_combo) or "").strip()
+        microphone = str(self._combo_value(self.microphone_combo) or "").strip()
+
+        current_res = str(self._combo_value(self.resolution_combo) or "").strip()
+        current_fps = self._combo_value(self.fps_combo)
+
+        resolutions = list_resolution_choices(camera)
+        fps_values = list_fps_choices(camera)
+
+        self.resolution_combo.blockSignals(True)
+        self.fps_combo.blockSignals(True)
+        self.resolution_combo.clear()
+        self.fps_combo.clear()
+
+        for value in resolutions:
+            self.resolution_combo.addItem(value, value)
+        for fps in fps_values:
+            self.fps_combo.addItem(f"{fps} fps", fps)
+
+        rec_res, rec_fps, rec_bitrate = (
+            recommend_defaults(camera, microphone)
+            if camera
+            else ("1280x720", AUTO_FPS, AUTO_BITRATE_KBPS)
+        )
+
+        if prefer_recommend or not current_res or current_res not in resolutions:
+            self._select_combo_value(self.resolution_combo, rec_res)
+        else:
+            self._select_combo_value(self.resolution_combo, current_res)
+
+        if prefer_recommend or current_fps is None or current_fps not in fps_values:
+            self._select_combo_value(self.fps_combo, rec_fps)
+        else:
+            self._select_combo_value(self.fps_combo, current_fps)
+
+        self.resolution_combo.blockSignals(False)
+        self.fps_combo.blockSignals(False)
+
+        # Bitrate sugerido ao trocar câmera / ao recomendar
+        if prefer_recommend:
+            self.bitrate_spin.setValue(rec_bitrate)
+        else:
+            self._sync_suggested_bitrate()
+
+    def _sync_suggested_bitrate(self) -> None:
+        """Atualiza o bitrate sugerido conforme resolução/FPS (usuário ainda pode editar)."""
+        resolution = str(self._combo_value(self.resolution_combo) or "1280x720")
+        fps = int(self._combo_value(self.fps_combo) or AUTO_FPS)
+        try:
+            w, h = (int(x) for x in resolution.lower().split("x", 1))
+            self.bitrate_spin.setValue(suggested_bitrate(w, h, fps))
+        except ValueError:
+            self.bitrate_spin.setValue(AUTO_BITRATE_KBPS)
+
     def _apply_config_to_ui(self, config: StreamConfig) -> None:
         self.host_edit.setText(config.vps_host)
         self.srt_port_spin.setValue(config.srt_port)
         self.stream_id_edit.setText(config.stream_id)
-        self._select_combo_value(self.resolution_combo, config.resolution)
         self._select_combo_value(self.camera_combo, config.camera, allow_missing=False)
         self._select_combo_value(
             self.microphone_combo,
             config.microphone,
             allow_missing=False,
         )
+        self._refresh_video_options(prefer_recommend=not bool(config.resolution))
+        if config.resolution:
+            self._select_combo_value(self.resolution_combo, config.resolution)
+        if config.fps:
+            self._select_combo_value(self.fps_combo, config.fps)
+        if config.bitrate_kbps:
+            self.bitrate_spin.setValue(config.bitrate_kbps)
 
     def _select_combo_value(
         self,
@@ -597,6 +670,14 @@ class MainWindow(QMainWindow):
         self.copy_rtsp_button.clicked.connect(self._on_copy_rtsp)
         self.host_edit.textChanged.connect(self._update_rtsp_url)
         self.stream_id_edit.textChanged.connect(self._update_rtsp_url)
+        self.camera_combo.currentIndexChanged.connect(
+            lambda: self._refresh_video_options(prefer_recommend=True)
+        )
+        self.microphone_combo.currentIndexChanged.connect(
+            lambda: self._refresh_video_options(prefer_recommend=False)
+        )
+        self.resolution_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
+        self.fps_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self._stream.status_changed.connect(self._on_status_changed)
         self._stream.log_line.connect(self._append_log)
         self._stream.validation_failed.connect(self._on_validation_failed)
@@ -604,19 +685,33 @@ class MainWindow(QMainWindow):
     def _collect_config(self) -> StreamConfig:
         camera = str(self._combo_value(self.camera_combo) or "").strip()
         microphone = str(self._combo_value(self.microphone_combo) or "").strip()
-        resolution = str(self._combo_value(self.resolution_combo) or "").strip()
+        resolution = str(self._combo_value(self.resolution_combo) or "1280x720").strip()
+        fps = int(self._combo_value(self.fps_combo) or AUTO_FPS)
+        bitrate = int(self.bitrate_spin.value())
+        profile = (
+            probe_best_profile(
+                camera,
+                microphone,
+                output_resolution=resolution,
+                output_fps=fps,
+                bitrate_kbps=bitrate,
+            )
+            if camera
+            else None
+        )
 
         return StreamConfig(
             vps_host=self.host_edit.text().strip(),
             srt_port=self.srt_port_spin.value(),
             stream_id=self.stream_id_edit.text().strip(),
             camera=camera,
-            resolution=resolution or "1280x720",
-            fps=AUTO_FPS,
-            bitrate_kbps=AUTO_BITRATE_KBPS,
+            resolution=resolution,
+            fps=fps,
+            bitrate_kbps=bitrate,
             microphone=microphone,
-            audio_channels=AUTO_AUDIO_CHANNELS,
-            gop=AUTO_GOP,
+            audio_channels=profile.audio_channels if profile else AUTO_AUDIO_CHANNELS,
+            sample_rate=profile.sample_rate if profile else 48000,
+            gop=profile.gop if profile else max(fps * 2, 1),
         )
 
     def _on_start_clicked(self) -> None:
@@ -755,6 +850,11 @@ class MainWindow(QMainWindow):
         self.refresh_video_button.setEnabled(not active)
         self.refresh_audio_button.setEnabled(not active)
         self.recheck_deps_button.setEnabled(not active)
+        self.camera_combo.setEnabled(not active)
+        self.microphone_combo.setEnabled(not active)
+        self.resolution_combo.setEnabled(not active)
+        self.fps_combo.setEnabled(not active)
+        self.bitrate_spin.setEnabled(not active)
 
     def _append_log(self, message: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
