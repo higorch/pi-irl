@@ -309,23 +309,26 @@ No `ffplay` deve aparecer `Audio: aac` (e você deve ouvir o microfone).
 
 #### 5. Testar vídeo + áudio juntos (SRT → MediaMTX)
 
+Se o áudio chegar antes do vídeo, o MediaMTX pode abrir o path só com AAC. Por isso o áudio é atrasado ~2s (`min-threshold-time`) para o H.264 (SPS/PPS) entrar primeiro:
+
 ```bash
 gst-launch-1.0 -e -v \
   v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! \
   x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=30 ! video/x-h264,profile=baseline ! \
   h264parse config-interval=1 ! queue ! mux. \
   alsasrc device=hw:3,0 ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate=48000 ! \
-  avenc_aac bitrate=128000 ! aacparse ! queue ! mux. \
+  avenc_aac bitrate=128000 ! aacparse ! \
+  queue min-threshold-time=2000000000 ! mux. \
   mpegtsmux name=mux alignment=7 ! \
   srtsink uri="srt://IP_VPS:8890?mode=caller&streamid=publish:irl" wait-for-connection=false
 ```
 
-No `ffplay` devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
+Espere ~3s e rode o `ffplay`. Devem aparecer **as duas** streams: `Video: h264` e `Audio: aac`.
 
 | Resultado | Significado |
 |-----------|-------------|
-| Só vídeo ok, juntos só áudio | Problema no mux A/V |
-| Só áudio ok, vídeo falha | Encode/câmera/`x264enc` |
+| Só vídeo ok + só áudio ok, juntos só áudio | Áudio chegou antes — use o atraso acima |
+| Só áudio ok, vídeo sozinho falha | Encode/câmera/`x264enc` |
 | Vídeo + áudio juntos ok | Pipeline ok — no app use `640x480` @ 30 |
 | Erro no `gst-launch` | Ver a mensagem do elemento que falhou |
 
