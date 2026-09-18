@@ -247,7 +247,11 @@ Abra pelo ícone **Pi-IRL** ou `python -m app.main`.
 
 No app: Host = IP/domínio da VPS · Porta SRT `8890` · Stream ID `irl` → **Iniciar transmissão**.
 
-No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl` (buffer de rede ~2–5 s).
+No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`
+
+- **Formato de entrada:** vazio  
+- **Opções do FFmpeg:** `rtsp_transport=tcp`  
+- **Buffering de rede:** `0` MB (menor latência; se engasgar, suba para 1–2 MB)
 
 ### Conferir webcam e testar o stream
 

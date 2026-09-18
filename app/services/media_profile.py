@@ -140,7 +140,8 @@ def probe_best_profile(
         if bitrate_kbps and bitrate_kbps >= 100
         else suggested_bitrate(out_w, out_h, out_fps)
     )
-    gop = max(out_fps * 2, 1)
+    # GOP de ~1 s: menos atraso no player (trade-off: um pouco mais de bitrate em cenas dinâmicas)
+    gop = max(out_fps, 1)
     audio_label = "estéreo" if audio_channels >= 2 else "mono"
 
     summary = (

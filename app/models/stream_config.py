@@ -41,7 +41,7 @@ class StreamConfig:
     microphone: str = ""
     audio_channels: int = 1
     sample_rate: int = 48000
-    gop: int = 48
+    gop: int = 24
 
     def build_srt_url(self) -> str:
         """Monta a URL SRT dinamicamente a partir de host, porta e stream id."""
@@ -49,7 +49,8 @@ class StreamConfig:
         stream_id = self.stream_id.strip()
         return (
             f"srt://{host}:{self.srt_port}"
-            f"?mode=caller&streamid=publish:{stream_id}"
+            f"?mode=caller&transtype=live&latency=120000"
+            f"&streamid=publish:{stream_id}"
         )
 
     def build_rtsp_url(self) -> str:

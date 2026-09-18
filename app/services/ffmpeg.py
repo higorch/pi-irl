@@ -107,7 +107,8 @@ class FFmpegService(QObject):
         audio_input: int,
     ) -> list[str]:
         maxrate = int(profile.bitrate_kbps * 1.15)
-        bufsize = profile.bitrate_kbps * 2
+        # VBV curto + zerolatency reduz atraso no encode
+        bufsize = max(profile.bitrate_kbps, int(profile.bitrate_kbps * 0.75))
         channels = 2 if profile.audio_channels >= 2 else 1
         audio_bitrate = "192k" if channels == 2 else "160k"
         vf = (
@@ -129,7 +130,7 @@ class FFmpegService(QObject):
             "-tune",
             "zerolatency",
             "-profile:v",
-            "main",
+            "baseline",
             "-g",
             str(profile.gop),
             "-keyint_min",
@@ -138,6 +139,8 @@ class FFmpegService(QObject):
             "0",
             "-bf",
             "0",
+            "-flags",
+            "+low_delay",
             "-b:v",
             f"{profile.bitrate_kbps}k",
             "-maxrate",
@@ -152,6 +155,12 @@ class FFmpegService(QObject):
             str(channels),
             "-b:a",
             audio_bitrate,
+            "-flush_packets",
+            "1",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
             "-f",
             "mpegts",
             config.build_srt_url(),
