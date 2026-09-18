@@ -141,10 +141,11 @@ def probe_best_profile(
         else suggested_bitrate(out_w, out_h, out_fps)
     )
     gop = max(out_fps * 2, 1)
+    audio_label = "estéreo" if audio_channels >= 2 else "mono"
 
     summary = (
         f"cap {capture_w}x{capture_h}@{capture_fps} ({fmt_label}) → "
-        f"out {out_w}x{out_h}@{out_fps} · {bitrate} kbps"
+        f"out {out_w}x{out_h}@{out_fps} · {bitrate} kbps · áudio {audio_label}"
     )
     return MediaProfile(
         input_format=input_format,
@@ -310,16 +311,35 @@ def _parse_v4l2_formats(
 
 
 def _probe_linux_audio(device: str) -> tuple[int, int] | None:
-    try:
-        result = subprocess.run(
-            ["arecord", "-D", device, "--dump-hw-params"],
-            capture_output=True,
-            text=True,
-            timeout=4,
-            check=False,
-        )
-        output = (result.stdout or "") + (result.stderr or "")
-    except (OSError, subprocess.TimeoutExpired):
+    """
+    Retorna (sample_rate, channels).
+
+    channels = 2 se o device permitir estéreo; 1 se só mono.
+    """
+    raw_device = device.strip()
+    candidates = [raw_device]
+    if raw_device.startswith("hw:"):
+        candidates.append("plughw:" + raw_device[3:])
+    elif raw_device.startswith("plughw:"):
+        candidates.append("hw:" + raw_device[7:])
+
+    output = ""
+    for candidate in candidates:
+        try:
+            result = subprocess.run(
+                ["arecord", "-D", candidate, "--dump-hw-params"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            if "RATE:" in output.upper() or "CHANNELS:" in output.upper():
+                break
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+
+    if not output:
         return None
 
     rates: list[int] = []
@@ -343,18 +363,20 @@ def _probe_linux_audio(device: str) -> tuple[int, int] | None:
         channels = [int(x) for x in re.findall(r"\d+", raw)]
 
     preferred_rates = (48000, 44100, 32000, 16000)
-    sample_rate = 48000
-    for rate in preferred_rates:
-        if rate in rates or not rates:
-            sample_rate = rate if rates else 48000
-            if rate in rates:
-                break
-    if rates and sample_rate not in rates:
-        sample_rate = max(rates)
-
-    if 1 in channels or not channels:
-        audio_channels = 1
+    if rates:
+        sample_rate = next((r for r in preferred_rates if r in rates), max(rates))
     else:
-        audio_channels = min(channels)
+        sample_rate = 48000
+
+    # Estéreo se o hardware permitir 2+ canais; senão mono
+    if any(ch >= 2 for ch in channels):
+        audio_channels = 2
+    elif 1 in channels:
+        audio_channels = 1
+    elif channels:
+        audio_channels = min(2, max(channels))
+    else:
+        # Sem info clara: mono (evita erro em USB Audio 1 canal)
+        audio_channels = 1
 
     return sample_rate, audio_channels

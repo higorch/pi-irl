@@ -108,6 +108,8 @@ class FFmpegService(QObject):
     ) -> list[str]:
         maxrate = int(profile.bitrate_kbps * 1.15)
         bufsize = profile.bitrate_kbps * 2
+        channels = 2 if profile.audio_channels >= 2 else 1
+        audio_bitrate = "192k" if channels == 2 else "160k"
         vf = (
             f"fps={profile.output_fps},"
             f"scale={profile.output_width}:{profile.output_height},"
@@ -147,9 +149,9 @@ class FFmpegService(QObject):
             "-ar",
             str(profile.sample_rate),
             "-ac",
-            str(profile.audio_channels),
+            str(channels),
             "-b:a",
-            "160k",
+            audio_bitrate,
             "-f",
             "mpegts",
             config.build_srt_url(),
@@ -160,8 +162,9 @@ class FFmpegService(QObject):
         config: StreamConfig,
         profile: MediaProfile,
     ) -> list[str]:
-        """V4L2 + ALSA com formato/tamanho/FPS detectados automaticamente."""
+        """V4L2 + ALSA com formato/tamanho/FPS/canais detectados automaticamente."""
         ffmpeg = self.resolve_ffmpeg_path() or "ffmpeg"
+        channels = 2 if profile.audio_channels >= 2 else 1
         return [
             ffmpeg,
             "-hide_banner",
@@ -185,10 +188,22 @@ class FFmpegService(QObject):
             "512",
             "-f",
             "alsa",
+            "-ac",
+            str(channels),
+            "-ar",
+            str(profile.sample_rate),
             "-i",
-            config.microphone,
+            self._alsa_device(config.microphone),
             *self._encode_args(config, profile, audio_input=1),
         ]
+
+    @staticmethod
+    def _alsa_device(device: str) -> str:
+        """Prefere plughw: para o ALSA aceitar taxa/canais com conversão."""
+        value = device.strip()
+        if value.startswith("hw:"):
+            return "plughw:" + value[3:]
+        return value
 
     def _build_windows_command(
         self,
