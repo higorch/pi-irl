@@ -253,6 +253,10 @@ No OBS: Fonte → Media Source → `rtsp://IP_VPS:8554/irl`
 - **Opções do FFmpeg:** `rtsp_transport=tcp`  
 - **Buffering de rede:** `0` MB (menor latência; se engasgar, suba para 1–2 MB)
 
+### Câmera e microfone
+
+O app lista só os dispositivos **conectados** (USB, CSI, jack). Escolha o nome na lista — sem digitar URL.
+
 ### Conferir webcam e testar o stream
 
 Troque `IP_VPS`, `/dev/video0` e `hw:3,0`. MediaMTX precisa estar rodando.

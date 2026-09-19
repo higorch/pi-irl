@@ -1,4 +1,4 @@
-"""Detecção rápida de câmeras e microfones conectados (Windows / Linux)."""
+"""Detecção rápida de fontes de vídeo/áudio (local + rede Wi‑Fi/IP)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class DeviceInfo:
-    """Dispositivo de captura com rótulo amigável e valor usado pelo FFmpeg."""
+    """Fonte de captura: nome amigável + valor interno do FFmpeg."""
 
     label: str
     value: str
@@ -27,11 +27,13 @@ _cache_mics: list[DeviceInfo] = []
 
 
 def list_cameras() -> list[DeviceInfo]:
+    """Câmeras locais conectadas (USB, CSI, etc.)."""
     cameras, _ = _list_all_cached()
     return cameras
 
 
 def list_microphones() -> list[DeviceInfo]:
+    """Microfones locais conectados (USB, jack, etc.)."""
     _, mics = _list_all_cached()
     return mics
 
@@ -73,10 +75,10 @@ def _list_linux_cameras() -> list[DeviceInfo]:
     grouped = _v4l2_list_devices_groups()
     if grouped:
         for name, paths in grouped:
-            if not paths:
+            path = _pick_v4l2_capture_path(paths)
+            if not path:
                 continue
-            path = paths[0]
-            label = f"{path} — {name}" if name else path
+            label = name or path
             devices.append(DeviceInfo(label=label, value=path))
         return _unique_devices(devices)
 
@@ -93,10 +95,24 @@ def _list_linux_cameras() -> list[DeviceInfo]:
             continue
         if not _is_v4l2_video_capture_fast(path):
             continue
-        label = f"{path} — {name}" if name else str(path)
+        label = name or str(path)
         devices.append(DeviceInfo(label=label, value=str(path)))
 
     return _unique_devices(devices)
+
+
+def _pick_v4l2_capture_path(paths: list[str]) -> str | None:
+    """Escolhe o primeiro nó V4L2 que realmente captura vídeo."""
+    fallback = ""
+    for path in paths:
+        name = _v4l2_sysfs_name(Path(path))
+        if _looks_like_metadata_node(name):
+            continue
+        if not fallback:
+            fallback = path
+        if _is_v4l2_video_capture_fast(Path(path)):
+            return path
+    return fallback or None
 
 
 def _v4l2_list_devices_groups() -> list[tuple[str, list[str]]]:
@@ -197,7 +213,8 @@ def _list_linux_microphones() -> list[DeviceInfo]:
     for match in pattern.finditer(output):
         card, device, name = match.group(1), match.group(2), match.group(3).strip()
         value = f"hw:{card},{device}"
-        label = f"{value} — {name}"
+        # arecord: "USB Audio [USB Audio]" → nome limpo
+        label = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip() or value
         devices.append(DeviceInfo(label=label, value=value))
 
     return _unique_devices(devices)

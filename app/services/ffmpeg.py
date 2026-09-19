@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import platform
 import shutil
 
 from PySide6.QtCore import QObject, QProcess, Signal
 
 from app.models.stream_config import StreamConfig
 from app.services.media_profile import MediaProfile, probe_best_profile
+from app.services.sources import SourceKind, classify_audio, classify_video, is_network_url
 
 
 class FFmpegService(QObject):
@@ -44,19 +44,46 @@ class FFmpegService(QObject):
         config: StreamConfig,
         profile: MediaProfile | None = None,
     ) -> list[str]:
-        """Monta a lista de argumentos do FFmpeg conforme a plataforma."""
+        """Monta o comando conforme o tipo de fonte (local ou rede)."""
+        camera = (config.camera or "").strip()
+        microphone = (config.microphone or "").strip()
+        if not camera:
+            raise ValueError("Câmera vazia.")
+        if not microphone:
+            raise ValueError("Microfone vazio.")
+
         if profile is None:
             profile = probe_best_profile(
-                config.camera,
-                config.microphone,
+                camera,
+                microphone,
                 output_resolution=config.resolution,
                 output_fps=config.fps,
                 bitrate_kbps=config.bitrate_kbps,
             )
-        system = platform.system()
-        if system == "Windows":
-            return self._build_windows_command(config, profile)
-        return self._build_linux_command(config, profile)
+
+        ffmpeg = self.resolve_ffmpeg_path() or "ffmpeg"
+        video_kind = classify_video(camera)
+        audio_kind = classify_audio(microphone)
+
+        args: list[str] = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-fflags",
+            "+genpts",
+        ]
+
+        args += self._video_input_args(config, profile, video_kind)
+
+        if audio_kind == SourceKind.FROM_CAMERA:
+            audio_input = 0
+        else:
+            args += self._audio_input_args(config, profile, audio_kind)
+            audio_input = 1
+
+        args += self._encode_args(config, profile, audio_input=audio_input)
+        return args
 
     def start(self, config: StreamConfig) -> None:
         if self.is_running():
@@ -67,20 +94,24 @@ class FFmpegService(QObject):
             self.error_occurred.emit("FFmpeg não encontrado.")
             return
 
-        profile = probe_best_profile(
-            config.camera,
-            config.microphone,
-            output_resolution=config.resolution,
-            output_fps=config.fps,
-            bitrate_kbps=config.bitrate_kbps,
-        )
-        self.log_line.emit(f"Perfil: {profile.summary}")
+        try:
+            profile = probe_best_profile(
+                config.camera,
+                config.microphone,
+                output_resolution=config.resolution,
+                output_fps=config.fps,
+                bitrate_kbps=config.bitrate_kbps,
+            )
+            config.gop = profile.gop
+            config.sample_rate = profile.sample_rate
+            config.audio_channels = profile.audio_channels
 
-        config.gop = profile.gop
-        config.sample_rate = profile.sample_rate
-        config.audio_channels = profile.audio_channels
+            self.log_line.emit(f"Perfil: {profile.summary}")
+            args = self.build_command(config, profile)
+        except ValueError as exc:
+            self.error_occurred.emit(str(exc))
+            return
 
-        args = self.build_command(config, profile)
         program = args[0]
         program_args = args[1:]
 
@@ -107,7 +138,6 @@ class FFmpegService(QObject):
         audio_input: int,
     ) -> list[str]:
         maxrate = int(profile.bitrate_kbps * 1.15)
-        # VBV curto + zerolatency reduz atraso no encode
         bufsize = max(profile.bitrate_kbps, int(profile.bitrate_kbps * 0.75))
         channels = 2 if profile.audio_channels >= 2 else 1
         audio_bitrate = "192k" if channels == 2 else "160k"
@@ -166,21 +196,25 @@ class FFmpegService(QObject):
             config.build_srt_url(),
         ]
 
-    def _build_linux_command(
+    def _video_input_args(
         self,
         config: StreamConfig,
         profile: MediaProfile,
+        kind: SourceKind,
     ) -> list[str]:
-        """V4L2 + ALSA com formato/tamanho/FPS/canais detectados automaticamente."""
-        ffmpeg = self.resolve_ffmpeg_path() or "ffmpeg"
-        channels = 2 if profile.audio_channels >= 2 else 1
+        if kind == SourceKind.NETWORK:
+            return self._network_input_args(config.camera)
+        if kind == SourceKind.DSHOW:
+            return [
+                "-thread_queue_size",
+                "512",
+                "-f",
+                "dshow",
+                "-i",
+                f"video={config.camera.strip()}",
+            ]
+        # V4L2
         return [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "info",
-            "-fflags",
-            "+genpts",
             "-thread_queue_size",
             "512",
             "-f",
@@ -192,7 +226,29 @@ class FFmpegService(QObject):
             "-framerate",
             str(profile.capture_fps),
             "-i",
-            config.camera,
+            config.camera.strip(),
+        ]
+
+    def _audio_input_args(
+        self,
+        config: StreamConfig,
+        profile: MediaProfile,
+        kind: SourceKind,
+    ) -> list[str]:
+        if kind == SourceKind.NETWORK:
+            return self._network_input_args(config.microphone)
+        if kind == SourceKind.DSHOW:
+            return [
+                "-thread_queue_size",
+                "512",
+                "-f",
+                "dshow",
+                "-i",
+                f"audio={config.microphone.strip()}",
+            ]
+        # ALSA
+        channels = 2 if profile.audio_channels >= 2 else 1
+        return [
             "-thread_queue_size",
             "512",
             "-f",
@@ -203,8 +259,19 @@ class FFmpegService(QObject):
             str(profile.sample_rate),
             "-i",
             self._alsa_device(config.microphone),
-            *self._encode_args(config, profile, audio_input=1),
         ]
+
+    @staticmethod
+    def _network_input_args(url: str) -> list[str]:
+        """RTSP/HTTP/UDP/etc. — genérico para câmeras/mics Wi‑Fi ou IP."""
+        value = url.strip()
+        args: list[str] = ["-thread_queue_size", "512"]
+        if value.lower().startswith(("rtsp://", "rtsps://")):
+            args += ["-rtsp_transport", "tcp", "-rtsp_flags", "prefer_tcp"]
+        if is_network_url(value):
+            args += ["-fflags", "nobuffer", "-flags", "low_delay"]
+        args += ["-i", value]
+        return args
 
     @staticmethod
     def _alsa_device(device: str) -> str:
@@ -213,29 +280,6 @@ class FFmpegService(QObject):
         if value.startswith("hw:"):
             return "plughw:" + value[3:]
         return value
-
-    def _build_windows_command(
-        self,
-        config: StreamConfig,
-        profile: MediaProfile,
-    ) -> list[str]:
-        """DirectShow: deixa o driver escolher o modo; escala/fps no -vf."""
-        ffmpeg = self.resolve_ffmpeg_path() or "ffmpeg"
-        video = f"video={config.camera}"
-        audio = f"audio={config.microphone}"
-        return [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "info",
-            "-fflags",
-            "+genpts",
-            "-f",
-            "dshow",
-            "-i",
-            f"{video}:{audio}",
-            *self._encode_args(config, profile, audio_input=0),
-        ]
 
     def _on_ready_read(self) -> None:
         data = self._process.readAllStandardOutput()

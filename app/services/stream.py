@@ -90,10 +90,9 @@ class StreamService(QObject):
             hint = ""
             if exit_code in (1, 251, 4294967041):
                 hint = (
-                " | Dica: confira câmera/mic (ALSA costuma ser mono: "
-                "cannot set channel count to 2), "
-                "formatos com `v4l2-ctl --list-formats-ext`, e Host/SRT da VPS."
-            )
+                    " | Dica: confira câmera/mic conectados, "
+                    "canais ALSA (mono vs estéreo) e Host/SRT da VPS."
+                )
             self.log_line.emit(
                 f"FFmpeg encerrou inesperadamente (código {exit_code}).{hint}"
             )

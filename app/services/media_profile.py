@@ -7,6 +7,13 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from app.services.sources import (
+    SourceKind,
+    classify_audio,
+    classify_video,
+    is_audio_from_camera,
+)
+
 
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
@@ -117,23 +124,46 @@ def probe_best_profile(
     out_fps = int(output_fps) if output_fps else TARGET_FPS
 
     system = platform.system()
-    if system == "Linux" and camera.startswith("/dev/video"):
+    video_kind = classify_video(camera)
+    audio_kind = classify_audio(microphone) if microphone else None
+
+    if video_kind == SourceKind.V4L2 and system == "Linux":
         video = _probe_linux_video(camera, target_w=out_w, target_h=out_h)
     else:
         video = None
 
-    audio = _probe_linux_audio(microphone) if system == "Linux" and microphone else None
+    if (
+        audio_kind == SourceKind.ALSA
+        and system == "Linux"
+        and microphone
+        and not is_audio_from_camera(microphone)
+    ):
+        audio = _probe_linux_audio(microphone)
+    else:
+        audio = None
 
     if video is None:
         capture_w, capture_h = out_w, out_h
-        capture_fps = 30 if out_fps == 24 else out_fps
+        capture_fps = out_fps if video_kind == SourceKind.NETWORK else (
+            30 if out_fps == 24 else out_fps
+        )
         input_format = "mjpeg"
-        fmt_label = "auto"
+        if video_kind == SourceKind.NETWORK:
+            fmt_label = "rede"
+        elif video_kind == SourceKind.DSHOW:
+            fmt_label = "dshow"
+        else:
+            fmt_label = "auto"
     else:
         capture_w, capture_h, capture_fps, input_format, fmt_label = video
 
-    sample_rate = audio[0] if audio else 48000
-    audio_channels = audio[1] if audio else 1
+    if audio:
+        sample_rate, audio_channels = audio
+    elif audio_kind in (SourceKind.FROM_CAMERA, SourceKind.NETWORK):
+        sample_rate, audio_channels = 48000, 2
+    else:
+        # ALSA/dshow local: mono por padrão (probe ALSA sobrescreve se houver estéreo)
+        sample_rate, audio_channels = 48000, 1
 
     bitrate = (
         int(bitrate_kbps)
@@ -165,7 +195,9 @@ def probe_best_profile(
 
 
 def _all_modes_for_camera(camera: str) -> list[tuple[int, int, int]]:
-    if not camera or platform.system() != "Linux" or not camera.startswith("/dev/video"):
+    if not camera or classify_video(camera) != SourceKind.V4L2:
+        return []
+    if platform.system() != "Linux":
         return []
     try:
         result = subprocess.run(

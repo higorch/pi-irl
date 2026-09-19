@@ -440,7 +440,7 @@ class MainWindow(QMainWindow):
         self.camera_combo = SelectBox()
         self.camera_combo.setEditable(False)
 
-        self.refresh_video_button = QPushButton("Procurar dispositivos")
+        self.refresh_video_button = QPushButton("Procurar")
         self.refresh_video_button.setToolTip("Atualizar lista de câmeras")
 
         camera_input = self._device_picker(self.camera_combo, self.refresh_video_button)
@@ -475,7 +475,7 @@ class MainWindow(QMainWindow):
         self.microphone_combo = SelectBox()
         self.microphone_combo.setEditable(False)
 
-        self.refresh_audio_button = QPushButton("Procurar dispositivos")
+        self.refresh_audio_button = QPushButton("Procurar")
         self.refresh_audio_button.setToolTip("Atualizar lista de microfones")
 
         mic_input = self._device_picker(
@@ -528,8 +528,8 @@ class MainWindow(QMainWindow):
         return card
 
     def _populate_devices(self) -> None:
-        current_camera = self._combo_value(self.camera_combo)
-        current_mic = self._combo_value(self.microphone_combo)
+        current_camera = str(self._combo_value(self.camera_combo) or "")
+        current_mic = str(self._combo_value(self.microphone_combo) or "")
 
         self.camera_combo.clear()
         cameras = devices.list_cameras()
@@ -547,7 +547,6 @@ class MainWindow(QMainWindow):
         else:
             self.microphone_combo.addItem("Nenhum microfone encontrado", "")
 
-        # Só restaura seleção anterior se o dispositivo ainda existir de verdade
         if current_camera and any(c.value == current_camera for c in cameras):
             self._select_combo_value(self.camera_combo, current_camera)
         if current_mic and any(m.value == current_mic for m in microphones):
@@ -646,7 +645,6 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(index)
             return
 
-        # Não reinsere dispositivos desconectados salvos no config
         if not allow_missing:
             return
 
@@ -670,12 +668,8 @@ class MainWindow(QMainWindow):
         self.copy_rtsp_button.clicked.connect(self._on_copy_rtsp)
         self.host_edit.textChanged.connect(self._update_rtsp_url)
         self.stream_id_edit.textChanged.connect(self._update_rtsp_url)
-        self.camera_combo.currentIndexChanged.connect(
-            lambda: self._refresh_video_options(prefer_recommend=True)
-        )
-        self.microphone_combo.currentIndexChanged.connect(
-            lambda: self._refresh_video_options(prefer_recommend=False)
-        )
+        self.camera_combo.currentIndexChanged.connect(self._on_camera_changed)
+        self.microphone_combo.currentIndexChanged.connect(self._on_mic_changed)
         self.resolution_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self.fps_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self._stream.status_changed.connect(self._on_status_changed)
@@ -711,8 +705,16 @@ class MainWindow(QMainWindow):
             microphone=microphone,
             audio_channels=profile.audio_channels if profile else AUTO_AUDIO_CHANNELS,
             sample_rate=profile.sample_rate if profile else 48000,
-            gop=profile.gop if profile else max(fps * 2, 1),
+            gop=profile.gop if profile else max(fps, 1),
         )
+
+    def _on_camera_changed(self) -> None:
+        self._refresh_video_options(prefer_recommend=True)
+        self._refresh_dependencies()
+
+    def _on_mic_changed(self) -> None:
+        self._refresh_video_options(prefer_recommend=False)
+        self._refresh_dependencies()
 
     def _on_start_clicked(self) -> None:
         config = self._collect_config()
@@ -743,8 +745,8 @@ class MainWindow(QMainWindow):
 
         camera = str(self._combo_value(self.camera_combo) or "").strip()
         microphone = str(self._combo_value(self.microphone_combo) or "").strip()
-        camera_ok = bool(camera) and camera != "Nenhuma câmera encontrada"
-        mic_ok = bool(microphone) and microphone != "Nenhum microfone encontrado"
+        camera_ok = bool(camera)
+        mic_ok = bool(microphone)
 
         self._set_dep_chip(
             self.dep_ffmpeg_label,
@@ -756,13 +758,13 @@ class MainWindow(QMainWindow):
             self.dep_camera_label,
             ok=camera_ok,
             label="Câmera",
-            detail=camera if camera_ok else "Nenhuma detectada",
+            detail=self.camera_combo.currentText() if camera_ok else "Nenhuma",
         )
         self._set_dep_chip(
             self.dep_mic_label,
             ok=mic_ok,
-            label="Microfone",
-            detail=microphone if mic_ok else "Nenhum detectado",
+            label="Áudio",
+            detail=self.microphone_combo.currentText() if mic_ok else "Nenhum",
         )
 
         self._ffmpeg_ready = ffmpeg_ok
