@@ -69,7 +69,8 @@ class FFmpegService(QObject):
             ffmpeg,
             "-hide_banner",
             "-loglevel",
-            "info",
+            "warning",
+            "-stats",
             "-fflags",
             "+genpts",
         ]
@@ -115,7 +116,6 @@ class FFmpegService(QObject):
         program = args[0]
         program_args = args[1:]
 
-        self.log_line.emit(f"Comando: {' '.join(args)}")
         self.log_line.emit("Iniciando FFmpeg...")
         self._process.start(program, program_args)
 

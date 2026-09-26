@@ -1,16 +1,14 @@
-"""Estilo limpo e espaçado do Pi-IRL."""
+"""Estilo limpo e linear do Pi-IRL."""
 
 APP_STYLESHEET = """
-/* Cor de texto e fonte globais; o fundo fica só nos containers nomeados
-   para que os widgets internos não pintem por cima dos cards. */
 QWidget {
-    color: #eceff4;
+    color: #e8ecf2;
     font-family: "Segoe UI", "Ubuntu", "Noto Sans", sans-serif;
     font-size: 13px;
 }
 
 QMainWindow, QWidget#rootArea, QWidget#scrollContent {
-    background-color: #101214;
+    background-color: #0e1013;
 }
 
 QScrollArea#configScroll {
@@ -18,71 +16,111 @@ QScrollArea#configScroll {
     border: none;
 }
 
+QWidget#tabPage {
+    background: transparent;
+}
+
 QLabel#brandLabel {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 800;
     color: #ffffff;
-    letter-spacing: 0.4px;
+    letter-spacing: 0.3px;
     margin: 0;
     padding: 0;
 }
 
 QLabel#subtitleLabel {
-    font-size: 13px;
-    color: #8f98a8;
+    font-size: 12px;
+    color: #8b93a3;
     margin: 0;
     padding: 0;
 }
 
 QFrame#card {
-    background-color: #171a1f;
-    border: 1px solid #252a33;
-    border-radius: 16px;
+    background-color: #16191e;
+    border: 1px solid #242933;
+    border-radius: 14px;
 }
 
 QLabel#sectionTitle {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
-    color: #8f98a8;
-    letter-spacing: 0.8px;
-    margin: 0;
+    color: #7a8496;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    margin: 0 0 4px 0;
     padding: 0;
 }
 
 QLabel#fieldLabel {
     font-size: 12px;
     font-weight: 600;
-    color: #b4bcc8;
+    color: #a8b0bf;
     margin: 0;
     padding: 0;
 }
 
 QLabel#infoValue {
-    background-color: #0d0f12;
+    background-color: #0c0e12;
     border: 1px solid #2a303a;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 10px 12px;
     color: #9aa3b5;
     font-weight: 600;
 }
 
 QFrame#depsCard {
-    background-color: transparent;
-    border: 1px solid #252a33;
+    background-color: #16191e;
+    border: 1px solid #242933;
     border-radius: 12px;
+}
+
+QWidget#tabsWrap, QWidget#tabRow, QWidget#tabPage, QStackedWidget#tabStack {
+    background: transparent;
+    border: none;
+}
+
+QFrame#tabPanel {
+    background-color: #12151a;
+    border: 1px solid #242933;
+    border-radius: 14px;
+}
+
+QPushButton#tabButton {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: #8b93a3;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 8px 0 10px 0;
+    margin: 0;
+    text-align: left;
+}
+
+QPushButton#tabButton:checked {
+    color: #ffffff;
+    border-bottom: 2px solid #3dd68c;
+    background: transparent;
+}
+
+QPushButton#tabButton:hover:!checked {
+    color: #d5dae6;
+    background: transparent;
 }
 
 QLabel#depsTitle {
     font-size: 11px;
     font-weight: 700;
-    color: #7d879c;
-    letter-spacing: 0.8px;
+    color: #7a8496;
+    letter-spacing: 0.9px;
     text-transform: uppercase;
 }
 
 QLabel#depsChipOk, QLabel#depsChipError {
     border-radius: 999px;
-    padding: 4px 2px;
+    padding: 5px 8px;
     font-size: 12px;
     font-weight: 600;
 }
@@ -107,7 +145,7 @@ QLabel#depsPorts {
 
 QPushButton#depsRecheckButton {
     background-color: transparent;
-    color: #8f98a8;
+    color: #8b93a3;
     border: 1px solid #2a303a;
     border-radius: 14px;
     font-size: 14px;
@@ -121,10 +159,10 @@ QPushButton#depsRecheckButton:hover {
 }
 
 QLabel#rtspValue {
-    background-color: #0d0f12;
+    background-color: #0c0e12;
     border: 1px solid #2a303a;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 10px 12px;
     color: #3dd68c;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
@@ -133,17 +171,19 @@ QLabel#rtspValue {
 
 QLabel#rtspHint {
     font-size: 11px;
-    color: #8f98a8;
+    color: #8b93a3;
+    line-height: 1.35;
 }
 
 QPushButton#copyButton {
-    background-color: #22272f;
+    background-color: #1e232b;
     color: #d5dae6;
     border: 1px solid #333a46;
     border-radius: 10px;
-    padding: 8px 14px;
+    padding: 0 16px;
     font-weight: 700;
     font-size: 12px;
+    min-width: 88px;
 }
 
 QPushButton#copyButton:hover {
@@ -151,13 +191,12 @@ QPushButton#copyButton:hover {
     color: #ffffff;
 }
 
-
 QLineEdit, QComboBox, QSpinBox {
-    background-color: #0d0f12;
+    background-color: #0c0e12;
     border: 1px solid #2a303a;
     border-radius: 10px;
-    padding: 8px 12px;
-    min-height: 22px;
+    padding: 0 12px;
+    min-height: 40px;
     color: #f3f5f8;
     selection-background-color: #1f7a4d;
 }
@@ -181,7 +220,7 @@ QComboBox {
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: center right;
-    width: 26px;
+    width: 28px;
     border: none;
     background: transparent;
 }
@@ -207,7 +246,7 @@ QPushButton#startButton {
     color: #ffffff;
     border: none;
     border-radius: 12px;
-    padding: 14px 24px;
+    padding: 12px 20px;
     font-weight: 800;
     font-size: 14px;
 }
@@ -222,11 +261,11 @@ QPushButton#startButton:disabled {
 }
 
 QPushButton#stopButton {
-    background-color: #22272f;
+    background-color: #1e232b;
     color: #f2f4f8;
     border: 1px solid #333a46;
     border-radius: 12px;
-    padding: 14px 24px;
+    padding: 12px 20px;
     font-weight: 800;
     font-size: 14px;
 }
@@ -243,13 +282,14 @@ QPushButton#stopButton:disabled {
 }
 
 QPushButton#refreshButton {
-    background-color: #22272f;
+    background-color: #1e232b;
     color: #d5dae6;
     border: 1px solid #333a46;
     border-radius: 10px;
-    padding: 10px 14px;
+    padding: 0 14px;
     font-weight: 700;
     font-size: 12px;
+    min-width: 96px;
 }
 
 QPushButton#refreshButton:hover {
@@ -258,17 +298,17 @@ QPushButton#refreshButton:hover {
 }
 
 QLabel#statusBadge {
-    background-color: #22272f;
+    background-color: #1e232b;
     border: 1px solid #333a46;
-    border-radius: 20px;
-    padding: 8px 16px;
+    border-radius: 18px;
+    padding: 0 14px;
     font-size: 12px;
     font-weight: 800;
 }
 
 QPlainTextEdit#logView {
-    background-color: #0b0d10;
-    border: 1px solid #252a33;
+    background-color: #0a0c0f;
+    border: 1px solid #242933;
     border-radius: 12px;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
@@ -278,13 +318,13 @@ QPlainTextEdit#logView {
 
 QScrollBar:vertical {
     background: transparent;
-    width: 10px;
-    margin: 4px 2px;
+    width: 8px;
+    margin: 4px 1px;
 }
 
 QScrollBar::handle:vertical {
     background: #333a46;
-    border-radius: 5px;
+    border-radius: 4px;
     min-height: 28px;
 }
 
@@ -293,7 +333,6 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 }
 """
 
-# Ajustes para telas pequenas (~3.5", 480x320 etc.)
 COMPACT_STYLESHEET = """
 QWidget {
     font-size: 11px;
@@ -313,17 +352,17 @@ QFrame#card {
 
 QLabel#sectionTitle {
     font-size: 10px;
-    letter-spacing: 0.4px;
+    letter-spacing: 0.6px;
 }
 
 QLabel#fieldLabel {
     font-size: 10px;
 }
 
-QLineEdit, QComboBox, QSpinBox, QLabel#infoValue {
+QLineEdit, QComboBox, QSpinBox, QLabel#infoValue, QLabel#rtspValue {
     border-radius: 8px;
-    padding: 5px 8px;
-    min-height: 18px;
+    padding: 0 8px;
+    min-height: 32px;
     font-size: 11px;
 }
 
@@ -335,26 +374,32 @@ QComboBox::drop-down {
     width: 20px;
 }
 
+QFrame#tabPanel {
+    border-radius: 10px;
+}
+
+QPushButton#tabButton {
+    font-size: 10px;
+    padding: 6px 0 8px 0;
+}
+
 QPushButton#startButton, QPushButton#stopButton {
     border-radius: 8px;
     padding: 8px 12px;
     font-size: 12px;
 }
 
-QPushButton#refreshButton {
+QPushButton#refreshButton, QPushButton#copyButton {
     border-radius: 8px;
-    padding: 6px 8px;
+    padding: 0 8px;
     font-size: 10px;
+    min-width: 72px;
 }
 
 QPlainTextEdit#logView {
     border-radius: 8px;
     font-size: 10px;
-    padding: 6px;
-}
-
-QScrollBar:vertical {
-    width: 8px;
+    padding: 8px;
 }
 
 QFrame#depsCard {
@@ -367,27 +412,10 @@ QLabel#depsTitle {
 
 QLabel#depsChipOk, QLabel#depsChipError {
     font-size: 10px;
-    padding: 3px 1px;
+    padding: 3px 6px;
 }
 
-QLabel#depsPorts {
+QLabel#depsPorts, QLabel#rtspHint {
     font-size: 9px;
-}
-
-QPushButton#depsRecheckButton {
-    border-radius: 12px;
-    font-size: 12px;
-}
-
-QLabel#rtspValue {
-    font-size: 10px;
-    border-radius: 8px;
-    padding: 5px 8px;
-}
-
-QPushButton#copyButton {
-    border-radius: 8px;
-    padding: 6px 8px;
-    font-size: 10px;
 }
 """

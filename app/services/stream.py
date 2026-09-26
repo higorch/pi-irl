@@ -1,15 +1,16 @@
-"""Orquestração da transmissão IRL."""
+"""Orquestração da transmissão IRL (+ bonding opcional)."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, QProcess, Signal
 
 from app.models.stream_config import StreamConfig, StreamStatus
+from app.services import bonding as bonding_service
 from app.services.ffmpeg import FFmpegService
 
 
 class StreamService(QObject):
-    """Coordena status, validação e ciclo de vida do FFmpeg."""
+    """Coordena status, validação, bonding opcional e FFmpeg."""
 
     status_changed = Signal(str)
     log_line = Signal(str)
@@ -53,8 +54,27 @@ class StreamService(QObject):
 
         self._user_stopping = False
         self._set_status(StreamStatus.STARTING)
-        self.log_line.emit(f"URL SRT: {config.build_srt_url()}")
-        self.log_line.emit(f"RTSP esperado: {config.build_rtsp_url()}")
+
+        camera = config.camera.strip()
+        mic = config.microphone.strip()
+        channels = "estéreo" if config.audio_channels >= 2 else "mono"
+        self.log_line.emit(
+            f"Câmera: {camera} · Mic: {mic} ({channels}) · "
+            f"{config.resolution}@{config.fps} · {config.bitrate_kbps} kbps"
+        )
+
+        if config.bonding_configured:
+            _ok, message = bonding_service.ensure_bonding_started()
+            self.log_line.emit(message)
+        else:
+            self.log_line.emit(
+                "Bonding opcional não configurado — transmitindo sem agregação."
+            )
+
+        self.log_line.emit(
+            f"Publicando SRT → {config.vps_host.strip()}:{config.srt_port} / "
+            f"{config.stream_id.strip()}"
+        )
         self._ffmpeg.start(config)
         return True
 
@@ -72,7 +92,6 @@ class StreamService(QObject):
 
     def _on_ffmpeg_started(self) -> None:
         self._set_status(StreamStatus.LIVE)
-        self.log_line.emit("Transmissão iniciada.")
 
     def _on_ffmpeg_finished(
         self,
@@ -90,15 +109,14 @@ class StreamService(QObject):
             hint = ""
             if exit_code in (1, 251, 4294967041):
                 hint = (
-                    " | Dica: confira câmera/mic conectados, "
-                    "canais ALSA (mono vs estéreo) e Host/SRT da VPS."
+                    " Confira câmera/mic, canais ALSA e Host/SRT da VPS."
                 )
             self.log_line.emit(
-                f"FFmpeg encerrou inesperadamente (código {exit_code}).{hint}"
+                f"Transmissão falhou (código {exit_code}).{hint}"
             )
         else:
             self._set_status(StreamStatus.OFFLINE)
-            self.log_line.emit("FFmpeg finalizou.")
+            self.log_line.emit("Transmissão finalizada.")
 
     def _on_ffmpeg_error(self, message: str) -> None:
         self._set_status(StreamStatus.ERROR)

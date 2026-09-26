@@ -42,6 +42,18 @@ class StreamConfig:
     audio_channels: int = 1
     sample_rate: int = 48000
     gop: int = 24
+    # BSBF (opcional) — se preenchido, o start tenta subir o bonding
+    bonding_server: str = ""
+    bonding_port: int = 0
+    bonding_uuid: str = ""
+
+    @property
+    def bonding_configured(self) -> bool:
+        return bool(
+            self.bonding_server.strip()
+            and self.bonding_port > 0
+            and self.bonding_uuid.strip()
+        )
 
     def build_srt_url(self) -> str:
         """Monta a URL SRT dinamicamente a partir de host, porta e stream id."""

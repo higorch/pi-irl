@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +38,7 @@ from PySide6.QtWidgets import (
 from app.config import load_config, save_config
 from app.models.stream_config import StreamConfig, StreamStatus
 from app.services import devices
+from app.services import bonding as bonding_service
 from app.services.ffmpeg import FFmpegService
 from app.services.media_profile import (
     list_fps_choices,
@@ -44,14 +47,14 @@ from app.services.media_profile import (
     recommend_defaults,
     suggested_bitrate,
 )
+from app.services.network import list_network_links
+from app.services.smart_log import SmartLogFilter
 from app.services.stream import StreamService
 from app.ui.styles import APP_STYLESHEET, COMPACT_STYLESHEET
 
 # Portas padrão do MediaMTX (referência na UI / URL RTSP)
 MEDIAMTX_SRT_PORT = 8890
 MEDIAMTX_RTSP_PORT = 8554
-MEDIAMTX_RTMP_PORT = 1935
-MEDIAMTX_HLS_PORT = 8888
 
 # Valores padrão (pré-seleção / fallback)
 AUTO_FPS = 24
@@ -95,9 +98,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Pi-IRL")
 
         self._compact = self._detect_compact_screen()
-        self._input_height = 34 if self._compact else 40
-        self._field_gap = 10 if self._compact else 14
-        self._label_gap = 5 if self._compact else 7
+        self._input_height = 32 if self._compact else 40
+        self._field_gap = 12 if self._compact else 14
+        self._label_gap = 6 if self._compact else 7
+        self._page_margin = 12 if self._compact else 22
+        self._section_gap = 12 if self._compact else 16
+        self._tab_pad = 12 if self._compact else 16
 
         if self._compact:
             self.resize(480, 320)
@@ -112,6 +118,9 @@ class MainWindow(QMainWindow):
         self._stream = StreamService(self)
         self._ffmpeg_ready = False
         self._current_rtsp_url = ""
+        self._smart_log = SmartLogFilter()
+        self._network_timer = QTimer(self)
+        self._network_timer.setInterval(5000)
 
         self._build_ui()
         self._populate_devices()
@@ -121,6 +130,9 @@ class MainWindow(QMainWindow):
         self._set_status_badge(StreamStatus.OFFLINE)
         self._refresh_dependencies()
         self._update_rtsp_url()
+        self._refresh_internet_card()
+        self._network_timer.start()
+        QTimer.singleShot(50, self._sync_tab_height)
 
     def _detect_compact_screen(self) -> bool:
         screen = QGuiApplication.primaryScreen()
@@ -135,9 +147,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         root = QVBoxLayout(central)
-        margin = 10 if self._compact else 24
-        root.setContentsMargins(margin, margin, margin, margin)
-        root.setSpacing(10 if self._compact else 14)
+        root.setContentsMargins(
+            self._page_margin,
+            self._page_margin,
+            self._page_margin,
+            self._page_margin,
+        )
+        root.setSpacing(self._section_gap)
 
         root.addWidget(self._build_header())
         root.addWidget(self._build_content_scroll(), stretch=1)
@@ -148,12 +164,10 @@ class MainWindow(QMainWindow):
         content.setObjectName("scrollContent")
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 4, 0)
-        layout.setSpacing(self._field_gap)
+        layout.setContentsMargins(0, 0, 2, 0)
+        layout.setSpacing(self._section_gap)
         layout.addWidget(self._build_deps_card())
-        layout.addWidget(self._build_connection_card())
-        layout.addWidget(self._build_video_card())
-        layout.addWidget(self._build_audio_card())
+        layout.addWidget(self._build_tabs())
         layout.addWidget(self._build_log_card(), stretch=1)
 
         scroll = QScrollArea()
@@ -163,6 +177,108 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return scroll
+
+    def _build_tabs(self) -> QWidget:
+        """Abas customizadas: mesma margem esquerda do container de conteúdo."""
+        wrap = QWidget()
+        wrap.setObjectName("tabsWrap")
+        wrap.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        root = QVBoxLayout(wrap)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(self._tab_pad)
+
+        tab_row = QWidget()
+        tab_row.setObjectName("tabRow")
+        tab_layout = QHBoxLayout(tab_row)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(24)
+
+        self._tab_buttons: list[QPushButton] = []
+        self._tab_group = QButtonGroup(self)
+        self._tab_group.setExclusive(True)
+        labels = ("Dispositivos", "Conexão", "Internet (bonding)")
+        for index, label in enumerate(labels):
+            button = QPushButton(label)
+            button.setObjectName("tabButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFlat(True)
+            if index == 0:
+                button.setChecked(True)
+            self._tab_group.addButton(button, index)
+            self._tab_buttons.append(button)
+            tab_layout.addWidget(button)
+        tab_layout.addStretch(1)
+
+        panel = QFrame()
+        panel.setObjectName("tabPanel")
+        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        panel_layout = QVBoxLayout(panel)
+        pad = self._tab_pad
+        panel_layout.setContentsMargins(pad, pad, pad, pad)
+        panel_layout.setSpacing(0)
+
+        self._tab_stack = QStackedWidget()
+        self._tab_stack.setObjectName("tabStack")
+        self._tab_stack.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
+
+        devices_page = QWidget()
+        devices_page.setObjectName("tabPage")
+        devices_layout = QVBoxLayout(devices_page)
+        devices_layout.setContentsMargins(0, 0, 0, 0)
+        devices_layout.setSpacing(self._tab_pad)
+        devices_layout.addWidget(self._build_video_card())
+        devices_layout.addWidget(self._build_audio_card())
+
+        connection_page = QWidget()
+        connection_page.setObjectName("tabPage")
+        connection_layout = QVBoxLayout(connection_page)
+        connection_layout.setContentsMargins(0, 0, 0, 0)
+        connection_layout.setSpacing(self._tab_pad)
+        connection_layout.addWidget(self._build_connection_card())
+
+        internet_page = QWidget()
+        internet_page.setObjectName("tabPage")
+        internet_layout = QVBoxLayout(internet_page)
+        internet_layout.setContentsMargins(0, 0, 0, 0)
+        internet_layout.setSpacing(self._tab_pad)
+        internet_layout.addWidget(self._build_internet_card())
+
+        self._tab_stack.addWidget(devices_page)
+        self._tab_stack.addWidget(connection_page)
+        self._tab_stack.addWidget(internet_page)
+        panel_layout.addWidget(self._tab_stack)
+
+        root.addWidget(tab_row)
+        root.addWidget(panel)
+
+        self._tab_group.idClicked.connect(self._on_tab_changed)
+        self.main_tabs = wrap
+        QTimer.singleShot(0, self._sync_tab_height)
+        return wrap
+
+    def _on_tab_changed(self, index: int) -> None:
+        self._tab_stack.setCurrentIndex(index)
+        self._sync_tab_height()
+
+    def _sync_tab_height(self) -> None:
+        """Altura do painel = conteúdo da aba atual (logs sobem junto)."""
+        page = self._tab_stack.currentWidget()
+        if page is None:
+            return
+        page.setMinimumHeight(0)
+        page.adjustSize()
+        height = max(page.sizeHint().height(), page.minimumSizeHint().height())
+        self._tab_stack.setFixedHeight(height)
+        panel = self._tab_stack.parentWidget()
+        if panel is not None:
+            panel.adjustSize()
+        wrap = getattr(self, "main_tabs", None)
+        if wrap is not None:
+            wrap.adjustSize()
 
     def _build_header(self) -> QWidget:
         header = QWidget()
@@ -203,10 +319,10 @@ class MainWindow(QMainWindow):
         card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(card)
-        pad_h = 10 if self._compact else 14
-        pad_v = 8 if self._compact else 10
+        pad_h = 12 if self._compact else 16
+        pad_v = 10 if self._compact else 14
         layout.setContentsMargins(pad_h, pad_v, pad_h, pad_v)
-        layout.setSpacing(6)
+        layout.setSpacing(10)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -228,7 +344,7 @@ class MainWindow(QMainWindow):
 
         chips = QHBoxLayout() if not self._compact else QVBoxLayout()
         chips.setContentsMargins(0, 0, 0, 0)
-        chips.setSpacing(6)
+        chips.setSpacing(8)
 
         self.dep_ffmpeg_label = QLabel()
         self.dep_camera_label = QLabel()
@@ -248,10 +364,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(chips)
 
         ports = QLabel(
-            f"MediaMTX · SRT {MEDIAMTX_SRT_PORT} · "
-            f"RTSP {MEDIAMTX_RTSP_PORT} · "
-            f"RTMP {MEDIAMTX_RTMP_PORT} · "
-            f"HLS {MEDIAMTX_HLS_PORT}"
+            f"MediaMTX · SRT {MEDIAMTX_SRT_PORT}/udp · RTSP {MEDIAMTX_RTSP_PORT}/tcp"
         )
         ports.setObjectName("depsPorts")
         ports.setWordWrap(True)
@@ -270,9 +383,9 @@ class MainWindow(QMainWindow):
         card.setObjectName("card")
 
         outer = QVBoxLayout(card)
-        pad = 12 if self._compact else 18
-        outer.setContentsMargins(pad, pad - 2, pad, pad)
-        outer.setSpacing(10 if self._compact else 12)
+        pad = 14 if self._compact else 18
+        outer.setContentsMargins(pad, pad, pad, pad)
+        outer.setSpacing(self._field_gap)
 
         if expanding:
             card.setSizePolicy(
@@ -359,11 +472,12 @@ class MainWindow(QMainWindow):
         wrap = QWidget()
         layout = QHBoxLayout(wrap) if not self._compact else QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         combo.setMinimumHeight(self._input_height)
         button.setMinimumHeight(self._input_height)
+        button.setFixedHeight(self._input_height)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setObjectName("refreshButton")
 
@@ -372,6 +486,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(combo)
             layout.addWidget(button)
         else:
+            button.setFixedWidth(96)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             layout.addWidget(combo, stretch=1)
             layout.addWidget(button)
@@ -416,11 +531,14 @@ class MainWindow(QMainWindow):
         self.copy_rtsp_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.copy_rtsp_button.setToolTip("Copiar URL RTSP para usar no OBS")
         self.copy_rtsp_button.setMinimumHeight(self._input_height)
+        self.copy_rtsp_button.setFixedHeight(self._input_height)
+        if not self._compact:
+            self.copy_rtsp_button.setFixedWidth(96)
 
         rtsp_row = QWidget()
         rtsp_layout = QHBoxLayout(rtsp_row) if not self._compact else QVBoxLayout(rtsp_row)
         rtsp_layout.setContentsMargins(0, 0, 0, 0)
-        rtsp_layout.setSpacing(8)
+        rtsp_layout.setSpacing(10)
         rtsp_layout.addWidget(self.rtsp_value, stretch=1)
         rtsp_layout.addWidget(self.copy_rtsp_button)
 
@@ -432,6 +550,54 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self._field("RTSP para o OBS", rtsp_row))
         layout.addWidget(rtsp_hint)
+        return card
+
+    def _build_internet_card(self) -> QFrame:
+        card, layout = self._make_card("Internet (bonding)")
+
+        self.network_links_label = QLabel("Procurando conexões…")
+        self.network_links_label.setObjectName("rtspHint")
+        self.network_links_label.setWordWrap(True)
+        self.network_links_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+
+        self.bonding_status_label = QLabel("Bonding: —")
+        self.bonding_status_label.setObjectName("rtspHint")
+        self.bonding_status_label.setWordWrap(True)
+
+        self.bonding_server_edit = QLineEdit()
+        self.bonding_server_edit.setPlaceholderText("IP do servidor BSBF")
+        self.bonding_server_edit.setClearButtonEnabled(True)
+
+        self.bonding_port_spin = QSpinBox()
+        self.bonding_port_spin.setRange(0, 65535)
+        self.bonding_port_spin.setSpecialValueText("—")
+        self.bonding_port_spin.setValue(0)
+
+        self.bonding_uuid_edit = QLineEdit()
+        self.bonding_uuid_edit.setPlaceholderText("UUID do cliente BSBF")
+        self.bonding_uuid_edit.setClearButtonEnabled(True)
+
+        bonding_hint = QLabel(
+            "Opcional. Se IP + porta + UUID estiverem preenchidos, "
+            "o bonding sobe ao clicar em Iniciar transmissão. "
+            "Sem isso, a transmissão segue normalmente."
+        )
+        bonding_hint.setObjectName("rtspHint")
+        bonding_hint.setWordWrap(True)
+
+        layout.addWidget(self.network_links_label)
+        layout.addWidget(self.bonding_status_label)
+        layout.addWidget(self._field("Servidor BSBF", self.bonding_server_edit))
+        layout.addWidget(
+            self._row(
+                self._field("Porta BSBF", self.bonding_port_spin),
+                self._field("UUID", self.bonding_uuid_edit),
+                stretches=[1, 2],
+            )
+        )
+        layout.addWidget(bonding_hint)
         return card
 
     def _build_video_card(self) -> QFrame:
@@ -463,7 +629,7 @@ class MainWindow(QMainWindow):
             self._row(
                 self._field("Resolução", self.resolution_combo),
                 self._field("FPS", self.fps_combo),
-                stretches=[2, 1],
+                stretches=[1, 1],
             )
         )
         layout.addWidget(self._field("Taxa de bits", self.bitrate_spin))
@@ -513,17 +679,22 @@ class MainWindow(QMainWindow):
     def _build_log_card(self) -> QFrame:
         card, layout = self._make_card("Registro", expanding=True)
 
+        self.health_label = QLabel("Saúde: —")
+        self.health_label.setObjectName("rtspHint")
+        self.health_label.setWordWrap(True)
+
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(2000)
-        self.log_view.setPlaceholderText("A saída do FFmpeg aparece aqui...")
+        self.log_view.setMaximumBlockCount(300)
+        self.log_view.setPlaceholderText("Eventos da transmissão…")
         self.log_view.setMinimumHeight(56 if self._compact else 80)
         font = QFont("Consolas")
         font.setStyleHint(QFont.StyleHint.Monospace)
         if self._compact:
             font.setPointSize(9)
         self.log_view.setFont(font)
+        layout.addWidget(self.health_label)
         layout.addWidget(self.log_view)
         return card
 
@@ -553,6 +724,7 @@ class MainWindow(QMainWindow):
             self._select_combo_value(self.microphone_combo, current_mic)
 
         self._refresh_video_options(prefer_recommend=True)
+        self._sync_tab_height()
 
     def _refresh_video_options(self, *, prefer_recommend: bool = False) -> None:
         """Preenche resolução/FPS e pré-seleciona o melhor (ou mantém a escolha atual)."""
@@ -614,6 +786,9 @@ class MainWindow(QMainWindow):
         self.host_edit.setText(config.vps_host)
         self.srt_port_spin.setValue(config.srt_port)
         self.stream_id_edit.setText(config.stream_id)
+        self.bonding_server_edit.setText(config.bonding_server)
+        self.bonding_port_spin.setValue(int(config.bonding_port or 0))
+        self.bonding_uuid_edit.setText(config.bonding_uuid)
         self._select_combo_value(self.camera_combo, config.camera, allow_missing=False)
         self._select_combo_value(
             self.microphone_combo,
@@ -672,6 +847,7 @@ class MainWindow(QMainWindow):
         self.microphone_combo.currentIndexChanged.connect(self._on_mic_changed)
         self.resolution_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self.fps_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
+        self._network_timer.timeout.connect(self._refresh_internet_card)
         self._stream.status_changed.connect(self._on_status_changed)
         self._stream.log_line.connect(self._append_log)
         self._stream.validation_failed.connect(self._on_validation_failed)
@@ -706,6 +882,9 @@ class MainWindow(QMainWindow):
             audio_channels=profile.audio_channels if profile else AUTO_AUDIO_CHANNELS,
             sample_rate=profile.sample_rate if profile else 48000,
             gop=profile.gop if profile else max(fps, 1),
+            bonding_server=self.bonding_server_edit.text().strip(),
+            bonding_port=int(self.bonding_port_spin.value()),
+            bonding_uuid=self.bonding_uuid_edit.text().strip(),
         )
 
     def _on_camera_changed(self) -> None:
@@ -729,14 +908,14 @@ class MainWindow(QMainWindow):
         self._populate_devices()
         self._select_combo_value(self.microphone_combo, current_mic)
         self._refresh_dependencies()
-        self._append_log("Câmeras atualizadas.")
+        self._append_app_log("Câmeras atualizadas.")
 
     def _on_refresh_audio(self) -> None:
         current_cam = self._combo_value(self.camera_combo)
         self._populate_devices()
         self._select_combo_value(self.camera_combo, current_cam)
         self._refresh_dependencies()
-        self._append_log("Microfones atualizados.")
+        self._append_app_log("Microfones atualizados.")
 
     def _refresh_dependencies(self) -> None:
         """Atualiza o checklist sutil de dependências (sem modal)."""
@@ -796,7 +975,7 @@ class MainWindow(QMainWindow):
     def _on_copy_rtsp(self) -> None:
         url = getattr(self, "_current_rtsp_url", self.rtsp_value.text())
         QApplication.clipboard().setText(url)
-        self._append_log(f"RTSP copiado: {url}")
+        self._append_app_log(f"RTSP copiado: {url}")
         self.copy_rtsp_button.setText("Copiado!")
         self.copy_rtsp_button.setEnabled(False)
 
@@ -813,6 +992,13 @@ class MainWindow(QMainWindow):
             enum_status = StreamStatus.OFFLINE
         self._set_status_badge(enum_status)
         self._update_buttons(enum_status)
+        if enum_status == StreamStatus.LIVE:
+            url = getattr(self, "_current_rtsp_url", "")
+            if url:
+                self._append_app_log(f"Ao vivo · RTSP: {url}")
+        if enum_status in (StreamStatus.OFFLINE, StreamStatus.ERROR):
+            self.health_label.setText("Saúde: —")
+        self._refresh_internet_card()
 
     def _set_status_badge(self, status: StreamStatus) -> None:
         colors = {
@@ -857,16 +1043,52 @@ class MainWindow(QMainWindow):
         self.resolution_combo.setEnabled(not active)
         self.fps_combo.setEnabled(not active)
         self.bitrate_spin.setEnabled(not active)
+        self.bonding_server_edit.setEnabled(not active)
+        self.bonding_port_spin.setEnabled(not active)
+        self.bonding_uuid_edit.setEnabled(not active)
+
+    def _refresh_internet_card(self) -> None:
+        links = list_network_links()
+        if links:
+            self.network_links_label.setText(
+                "Conexões:\n" + "\n".join(link.summary for link in links)
+            )
+        else:
+            self.network_links_label.setText(
+                "Conexões: nenhuma detectada (no Pi aparecem Wi‑Fi / 4G / cabo)."
+            )
+
+        status = bonding_service.bonding_status()
+        server = self.bonding_server_edit.text().strip()
+        port = int(self.bonding_port_spin.value())
+        uuid = self.bonding_uuid_edit.text().strip()
+        configured = bool(server and port > 0 and uuid)
+        if configured:
+            conf = f"configurado · {server}:{port}"
+        else:
+            conf = "não configurado (opcional)"
+        self.bonding_status_label.setText(
+            f"Bonding: {status.label_pt} · {conf}"
+            + (f" · {status.detail}" if status.detail else "")
+        )
 
     def _append_log(self, message: str) -> None:
+        event, health = self._smart_log.process(message)
+        if health is not None:
+            self.health_label.setText(health.label())
+        if event:
+            self._append_app_log(event)
+
+    def _append_app_log(self, message: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"[{stamp}] {message}")
 
     def _on_validation_failed(self, message: str) -> None:
-        self._append_log(message.replace("\n", " | "))
+        self._append_app_log(message.replace("\n", " | "))
         QMessageBox.warning(self, "Atenção", message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._network_timer.stop()
         save_config(self._collect_config())
         if self._stream.is_active:
             self._stream.stop()

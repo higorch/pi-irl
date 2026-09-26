@@ -18,6 +18,7 @@ dist/
 
 # Configuração local do usuário
 config.json
+.env
 
 # IDE / OS
 .idea/
