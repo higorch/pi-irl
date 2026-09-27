@@ -19,8 +19,11 @@ import shutil
 import subprocess
 import uuid as uuid_lib
 from dataclasses import dataclass
+from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+
+from app.config import SUDO_PASSWORD_ENV, sudo_password
 
 BSBF_BIN_DEFAULT = "/usr/local/sbin/bsbf-bonding"
 BSBF_CONF = "/usr/local/etc/bsbf/bsbf-bonding.conf"
@@ -29,6 +32,10 @@ CLIENT_INSTALLER_URL = "cld.bondingshouldbefree.org"
 
 INSTALL_TIMEOUT_MS = 20 * 60 * 1000
 ENABLE_TIMEOUT_MS = 90 * 1000
+
+# Helper do `sudo -A`: lê a senha do ambiente do próprio sudo (nunca vai para argv nem disco).
+_ASKPASS_VAR = "PI_IRL_SUDO_ASKPASS_SECRET"
+_ASKPASS_SCRIPT = f"#!/bin/sh\nprintf '%s\\n' \"${_ASKPASS_VAR}\"\n"
 
 
 @dataclass(frozen=True)
@@ -194,13 +201,22 @@ class BondingManager(QObject):
         self._finish_later(True, f"Bonding: ativo ({server}:{port}).")
 
     def _run(self, action: str, argv: list[str], timeout_ms: int) -> None:
+        process = QProcess(self)
         if hasattr(os, "geteuid") and os.geteuid() != 0:
-            argv = ["sudo", "-n", *argv]
+            password = sudo_password()
+            askpass = _askpass_helper() if password else None
+            if askpass:
+                env = QProcessEnvironment.systemEnvironment()
+                env.insert("SUDO_ASKPASS", askpass)
+                env.insert(_ASKPASS_VAR, password)
+                process.setProcessEnvironment(env)
+                argv = ["sudo", "-A", *argv]
+            else:
+                argv = ["sudo", "-n", *argv]
 
         self._action = action
         self._tail = []
         self._buffer = ""
-        process = QProcess(self)
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         process.readyReadStandardOutput.connect(self._on_output)
         process.finished.connect(self._on_finished)
@@ -232,11 +248,18 @@ class BondingManager(QObject):
         server, port, _uuid = self._target
         output = "\n".join(self._tail).lower()
         if exit_code != 0:
+            if "incorrect password" in output or "incorreta" in output:
+                self.finished.emit(
+                    False,
+                    f"Bonding: senha do sudo incorreta — confira {SUDO_PASSWORD_ENV} no .env. "
+                    "Transmitindo sem agregação.",
+                )
+                return
             if "password is required" in output or "senha" in output:
                 self.finished.emit(
                     False,
-                    "Bonding: o sudo pediu senha — libere sudo sem senha para este usuário "
-                    "(veja o README). Transmitindo sem agregação.",
+                    f"Bonding: o sudo pediu senha — defina {SUDO_PASSWORD_ENV} no .env "
+                    "ou libere sudo sem senha (veja o README). Transmitindo sem agregação.",
                 )
                 return
             last = self._tail[-1] if self._tail else ""
@@ -286,6 +309,19 @@ class BondingManager(QObject):
 
     def _finish_later(self, ok: bool, message: str) -> None:
         QTimer.singleShot(0, lambda: self.finished.emit(ok, message))
+
+
+def _askpass_helper() -> str | None:
+    """Caminho do helper do `sudo -A` (0700 em ~/.cache/pi-irl). None se não der para criar."""
+    path = Path.home() / ".cache" / "pi-irl" / "sudo-askpass.sh"
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not path.is_file() or path.read_text(encoding="utf-8") != _ASKPASS_SCRIPT:
+            path.write_text(_ASKPASS_SCRIPT, encoding="utf-8")
+        os.chmod(path, 0o700)
+    except OSError:
+        return None
+    return str(path)
 
 
 def _units_active() -> bool:

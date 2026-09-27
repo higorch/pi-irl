@@ -1,8 +1,9 @@
-"""Detecção rápida de fontes de vídeo/áudio (local + rede Wi‑Fi/IP)."""
+"""Detecção rápida de câmeras USB e microfones USB ou P2."""
 
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import subprocess
@@ -33,7 +34,7 @@ def list_cameras() -> list[DeviceInfo]:
 
 
 def list_microphones() -> list[DeviceInfo]:
-    """Microfones locais conectados (USB, jack, etc.)."""
+    """Microfones locais conectados (USB ou entrada P2)."""
     _, mics = _list_all_cached()
     return mics
 
@@ -74,17 +75,39 @@ def _list_all_cached() -> tuple[list[DeviceInfo], list[DeviceInfo]]:
     return cameras, mics
 
 
+def _sysfs_is_usb(device_link: Path) -> bool:
+    """True se o link `device` do sysfs aponta para um dispositivo no barramento USB."""
+    try:
+        return "/usb" in os.path.realpath(device_link)
+    except OSError:
+        return False
+
+
+def _is_usb_video(path: str) -> bool:
+    return _sysfs_is_usb(Path("/sys/class/video4linux") / Path(path).name / "device")
+
+
+def _is_usb_sound_card(card: str) -> bool:
+    return Path(f"/proc/asound/card{card}/usbid").exists() or _sysfs_is_usb(
+        Path(f"/sys/class/sound/card{card}/device")
+    )
+
+
 def _list_linux_cameras() -> list[DeviceInfo]:
-    """Câmeras V4L2 presentes com captura (USB, CSI, etc.) — uma varredura rápida."""
+    """Câmeras V4L2 ligadas via USB (ignora CSI e nós internos do Pi como codec/ISP)."""
     devices: list[DeviceInfo] = []
     # Um único comando: agrupa nós por dispositivo físico; o 1º /dev/video* costuma ser captura.
     grouped = _v4l2_list_devices_groups()
     if grouped:
         for name, paths in grouped:
+            paths = [p for p in paths if _is_usb_video(p)]
+            if not paths:
+                continue
             path = _pick_v4l2_capture_path(paths)
             if not path:
                 continue
-            label = name or path
+            # "SJCAM SJ4000 (usb-xhci-hcd.0-1)" → "SJCAM SJ4000"
+            label = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip() or path
             devices.append(DeviceInfo(label=label, value=path))
         return _unique_devices(devices)
 
@@ -94,7 +117,7 @@ def _list_linux_cameras() -> list[DeviceInfo]:
         return devices
 
     for path in sorted(video_root.glob("video*")):
-        if not path.exists():
+        if not path.exists() or not _is_usb_video(str(path)):
             continue
         name = _v4l2_sysfs_name(path)
         if _looks_like_metadata_node(name):
@@ -197,8 +220,15 @@ def _is_v4l2_video_capture_fast(path: Path) -> bool:
     )
 
 
+_VIRTUAL_SOUND_CARD = re.compile(r"loopback|dummy|null|virtual|hdmi", re.IGNORECASE)
+
+
+def _mic_label(name: str, *, usb: bool) -> str:
+    return f"{name} · {'USB' if usb else 'P2'}"
+
+
 def _list_linux_microphones() -> list[DeviceInfo]:
-    """Todas as entradas de captura ALSA presentes (USB, jack, etc.)."""
+    """Entradas de captura ALSA: placas USB e entradas analógicas P2 (codec/HAT), sem virtuais."""
     devices: list[DeviceInfo] = []
     try:
         result = subprocess.run(
@@ -213,48 +243,66 @@ def _list_linux_microphones() -> list[DeviceInfo]:
         return devices
 
     pattern = re.compile(
-        r"card\s+(\d+):[^\n]*device\s+(\d+):\s*([^\n]+)",
+        r"card\s+(\d+):([^\n]*?)device\s+(\d+):\s*([^\n]+)",
         re.IGNORECASE,
     )
     for match in pattern.finditer(output):
-        card, device, name = match.group(1), match.group(2), match.group(3).strip()
+        card, card_desc = match.group(1), match.group(2)
+        device, name = match.group(3), match.group(4).strip()
+        usb = _is_usb_sound_card(card)
+        if not usb and _VIRTUAL_SOUND_CARD.search(f"{card_desc} {name}"):
+            continue
         value = f"hw:{card},{device}"
         # arecord: "USB Audio [USB Audio]" → nome limpo
         label = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip() or value
-        devices.append(DeviceInfo(label=label, value=value))
+        devices.append(DeviceInfo(label=_mic_label(label, usb=usb), value=value))
 
     return _unique_devices(devices)
 
 
 def _list_windows_all() -> tuple[list[DeviceInfo], list[DeviceInfo]]:
-    """Uma única chamada PowerShell: câmeras + endpoints de captura presentes."""
+    """Uma chamada PowerShell: câmeras USB e microfones USB ou P2.
+
+    Câmera: InstanceId USB\\…  ·  Microfone (endpoint SWD\\MMDEVAPI): pai USB\\…
+    (USB) ou HDAUDIO\\/INTELAUDIO\\… (entrada P2 da placa-mãe); ROOT\\… = virtual, ignorado.
+    """
     script = r"""
-$cams = New-Object System.Collections.Generic.List[string]
-$mics = New-Object System.Collections.Generic.List[string]
-Get-PnpDevice -PresentOnly -Status OK | ForEach-Object {
-  $class = $_.Class
-  $name = $_.FriendlyName
-  if (-not $name) { return }
-  if ($class -eq 'Camera' -or $class -eq 'Image') {
-    $cams.Add($name)
-    return
+$all = @(Get-PnpDevice -PresentOnly)
+$camDevs = New-Object System.Collections.Generic.List[object]
+$micDevs = New-Object System.Collections.Generic.List[object]
+foreach ($d in $all) {
+  $name = $d.FriendlyName
+  if ($d.Status -ne 'OK' -or -not $name) { continue }
+  if ($d.Class -eq 'Camera' -or $d.Class -eq 'Image') {
+    if ($d.InstanceId -like 'USB\*') { $camDevs.Add($d) }
+    continue
   }
-  if ($class -ne 'AudioEndpoint') { return }
+  if ($d.Class -ne 'AudioEndpoint') { continue }
   $l = $name.ToLowerInvariant()
-  if ($l -match 'speaker|headphone|fones de ouvido|alto-falante|output|render|hdmi|digitaloutput|digital output') { return }
-  if ($l -match 'virtual|broadcast|stereo mix|what u hear|what you hear') { return }
-  if ($l -match 'microfone|microphone|\bmic\b|line[- ]?in|entrada de linha|\bentrada\b|headset') {
-    $mics.Add($name)
-  }
+  if ($l -match 'speaker|headphone|fones de ouvido|fone de ouvido|alto-falante|output|render|hdmi|digitaloutput|digital output') { continue }
+  if ($l -match 'virtual|broadcast|stereo mix|what u hear|what you hear') { continue }
+  if ($l -match 'microfone|microphone|\bmic\b|line[- ]?in|entrada de linha|\bentrada\b|headset') { $micDevs.Add($d) }
 }
-@{ cams = $cams; mics = $mics } | ConvertTo-Json -Compress
+$parent = @{}
+if ($micDevs.Count) {
+  $micDevs | Get-PnpDeviceProperty -KeyName DEVPKEY_Device_Parent -ErrorAction SilentlyContinue |
+    ForEach-Object { $parent[$_.InstanceId] = [string]$_.Data }
+}
+$mics = @()
+foreach ($d in $micDevs) {
+  $p = $parent[$d.InstanceId]
+  $kind = if ($p -like 'USB\*') { 'usb' } elseif ($p -like 'HDAUDIO\*' -or $p -like 'INTELAUDIO\*') { 'p2' } else { '' }
+  if ($kind) { $mics += [pscustomobject]@{ name = [string]$d.FriendlyName; kind = $kind } }
+}
+$cams = @($camDevs | ForEach-Object { [string]$_.FriendlyName })
+[pscustomobject]@{ cams = $cams; mics = $mics } | ConvertTo-Json -Compress -Depth 3
 """
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
             capture_output=True,
             text=True,
-            timeout=8,
+            timeout=15,
             check=False,
             encoding="utf-8",
             errors="replace",
@@ -272,15 +320,21 @@ Get-PnpDevice -PresentOnly -Status OK | ForEach-Object {
         return [], []
 
     cam_names = _as_str_list(data.get("cams"))
-    mic_names = _as_str_list(data.get("mics"))
+    raw_mics = data.get("mics") or []
+    if isinstance(raw_mics, dict):
+        raw_mics = [raw_mics]
 
     cameras = _unique_devices(
         [DeviceInfo(label=n, value=n) for n in cam_names]
     )
-    mics = _unique_devices(
-        [DeviceInfo(label=n, value=n) for n in mic_names]
-    )
-    return cameras, mics
+    mics: list[DeviceInfo] = []
+    for item in raw_mics:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            mics.append(DeviceInfo(label=_mic_label(name, usb=item.get("kind") == "usb"), value=name))
+    return cameras, _unique_devices(mics)
 
 
 def _as_str_list(value: object) -> list[str]:

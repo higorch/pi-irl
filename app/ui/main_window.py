@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import load_config, save_config
+from app.config import load_app_settings, load_config, save_config
 from app.models.stream_config import StreamConfig, StreamStatus
 from app.services import devices
 from app.services import bonding as bonding_service
@@ -67,10 +67,10 @@ AUTO_AUDIO_CHANNELS = 1
 
 DOCS_URL = "https://github.com/higorch/pi-irl"
 
-# Início automático no boot: espera câmera, mic e internet (~3 min no máximo)
+# Início automático no boot (tentativas/intervalo vêm do .env)
 AUTOSTART_FIRST_DELAY_MS = 3000
-AUTOSTART_RETRY_MS = 5000
-AUTOSTART_MAX_ATTEMPTS = 36
+# Ao vivo por esse tempo sem erro = conexão com câmera/mic confirmada
+AUTOSTART_STABLE_MS = 15000
 
 ARROW_COLOR = "#9aa3b5"
 # Telas ~3.5" (ex.: 480x320) e afins
@@ -155,6 +155,7 @@ class MainWindow(QMainWindow):
             self.setStyleSheet(APP_STYLESHEET)
 
         self._config = load_config()
+        self._settings = load_app_settings()
         self._stream = StreamService(self)
         self._ffmpeg_ready = False
         self._current_rtsp_url = ""
@@ -177,8 +178,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, self._sync_tab_height)
 
         self._autostart_attempts = 0
+        self._autostart_pending = False
         if autostart:
-            QTimer.singleShot(AUTOSTART_FIRST_DELAY_MS, self._try_autostart)
+            QTimer.singleShot(AUTOSTART_FIRST_DELAY_MS, self._begin_autostart)
 
     def _detect_compact_screen(self) -> bool:
         screen = QGuiApplication.primaryScreen()
@@ -1037,43 +1039,77 @@ class MainWindow(QMainWindow):
         self._stream.start(config)
 
     def _on_stop_clicked(self) -> None:
+        if self._autostart_pending:
+            self._autostart_pending = False
+            self._append_app_log("Início automático interrompido pelo usuário.")
         self._stream.stop()
 
-    def _try_autostart(self) -> None:
-        """Inicia a transmissão sozinho se a configuração salva estiver completa."""
-        if self._stream.is_active:
-            return
+    def _begin_autostart(self) -> None:
         saved = self._config
-        self._autostart_attempts += 1
+        errors = saved.validate()
+        if FFmpegService.resolve_ffmpeg_path() is None:
+            errors.append("FFmpeg não encontrado.")
+        if errors:
+            self._append_app_log(
+                "Início automático desativado — configuração incompleta: " + " ".join(errors)
+            )
+            return
+        self._autostart_pending = True
+        self._try_autostart()
 
-        if self._autostart_attempts == 1:
-            errors = saved.validate()
-            if FFmpegService.resolve_ffmpeg_path() is None:
-                errors.append("FFmpeg não encontrado.")
-            if errors:
-                self._append_app_log(
-                    "Início automático desativado — configuração incompleta: "
-                    + " ".join(errors)
-                )
-                return
+    def _autostart_attempt_label(self) -> str:
+        limit = self._settings.device_retry_attempts
+        return f"{self._autostart_attempts}/{limit}" if limit else str(self._autostart_attempts)
+
+    def _autostart_can_retry(self) -> bool:
+        limit = self._settings.device_retry_attempts
+        return not limit or self._autostart_attempts < limit
+
+    def _schedule_autostart_retry(self, reason: str) -> None:
+        interval = self._settings.device_retry_interval_s
+        if not self._autostart_can_retry():
+            self._autostart_pending = False
+            self._append_app_log(
+                f"Início automático cancelado após {self._autostart_attempts} tentativas — {reason}."
+            )
+            return
+        self._append_app_log(
+            f"Início automático ({self._autostart_attempt_label()}): {reason} — "
+            f"nova tentativa em {interval} s."
+        )
+        QTimer.singleShot(interval * 1000, self._try_autostart)
+
+    def _try_autostart(self) -> None:
+        """Tenta conectar câmera/mic USB e iniciar a transmissão com a config salva."""
+        if not self._autostart_pending or self._stream.is_active:
+            return
+        self._autostart_attempts += 1
+        saved = self._config
 
         missing = self._autostart_missing(saved)
-        if not missing:
-            self._apply_config_to_ui(saved)
-            self._append_app_log("Início automático: tudo pronto — iniciando transmissão.")
-            self._on_start_clicked()
+        if missing:
+            self._schedule_autostart_retry("não encontrado: " + ", ".join(missing))
             return
 
-        if self._autostart_attempts >= AUTOSTART_MAX_ATTEMPTS:
-            self._append_app_log(
-                "Início automático cancelado — não encontrado: " + ", ".join(missing) + "."
-            )
+        self._apply_config_to_ui(saved)
+        self._append_app_log(
+            f"Início automático ({self._autostart_attempt_label()}): "
+            "câmera e microfone encontrados — iniciando transmissão."
+        )
+        self._on_start_clicked()
+
+    def _on_autostart_status(self, status: StreamStatus) -> None:
+        if not self._autostart_pending:
             return
-        if self._autostart_attempts == 1:
-            self._append_app_log(
-                "Início automático: aguardando " + ", ".join(missing) + "…"
-            )
-        QTimer.singleShot(AUTOSTART_RETRY_MS, self._try_autostart)
+        if status == StreamStatus.LIVE:
+            QTimer.singleShot(AUTOSTART_STABLE_MS, self._confirm_autostart)
+        elif status == StreamStatus.ERROR:
+            self._schedule_autostart_retry("falha ao conectar câmera/microfone ou servidor")
+
+    def _confirm_autostart(self) -> None:
+        if self._autostart_pending and self._stream.status == StreamStatus.LIVE:
+            self._autostart_pending = False
+            self._append_app_log("Início automático: transmissão estável.")
 
     def _autostart_missing(self, saved: StreamConfig) -> list[str]:
         def has(combo: QComboBox, value: str) -> bool:
@@ -1192,6 +1228,7 @@ class MainWindow(QMainWindow):
             self.health_label.setText("Saúde: —")
             if self._devices_dirty:
                 QTimer.singleShot(0, self._on_devices_changed)
+        self._on_autostart_status(enum_status)
         self._refresh_internet_card()
 
     def _set_status_badge(self, status: StreamStatus) -> None:

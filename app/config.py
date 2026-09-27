@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.models.stream_config import StreamConfig
@@ -22,6 +23,20 @@ _ENV_MAP: dict[str, str] = {
     "BONDING_UUID": "bonding_uuid",
 }
 
+SUDO_PASSWORD_ENV = "PI_SUDO_PASSWORD"
+# Segredos não vão para os.environ: senão FFmpeg e demais processos filhos os herdariam.
+_SECRET_ENV_KEYS = frozenset({SUDO_PASSWORD_ENV})
+_exported_secrets: dict[str, str] = {}
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    """Ajustes do app que não fazem parte do perfil de transmissão."""
+
+    # Início automático no boot: tentativas de conectar câmera/mic USB (0 = sem limite)
+    device_retry_attempts: int = 10
+    device_retry_interval_s: int = 10
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -37,6 +52,10 @@ def env_path() -> Path:
 
 def load_dotenv(path: Path | None = None) -> dict[str, str]:
     """Lê .env simples (KEY=VALUE). Não sobrescreve variáveis já no ambiente."""
+    for key in _SECRET_ENV_KEYS:
+        if key in os.environ:
+            _exported_secrets[key] = os.environ.pop(key)
+
     file_path = path or env_path()
     values: dict[str, str] = {}
     if not file_path.exists():
@@ -57,9 +76,15 @@ def load_dotenv(path: Path | None = None) -> dict[str, str]:
         if not key:
             continue
         values[key] = value
-        if key not in os.environ:
+        if key not in os.environ and key not in _SECRET_ENV_KEYS:
             os.environ[key] = value
     return values
+
+
+def sudo_password() -> str:
+    """Senha do sudo do Pi (PI_SUDO_PASSWORD no .env ou exportada). Vazio = sudo sem senha."""
+    values = load_dotenv()
+    return values.get(SUDO_PASSWORD_ENV) or _exported_secrets.get(SUDO_PASSWORD_ENV, "")
 
 
 def _apply_env(config: StreamConfig, env: dict[str, str]) -> StreamConfig:
@@ -94,6 +119,26 @@ def load_config() -> StreamConfig:
             config = StreamConfig()
 
     return _apply_env(config, env)
+
+
+def _env_int(key: str, default: int, *, minimum: int) -> int:
+    try:
+        return max(minimum, int((os.environ.get(key) or "").strip()))
+    except ValueError:
+        return default
+
+
+def load_app_settings() -> AppSettings:
+    load_dotenv()
+    defaults = AppSettings()
+    return AppSettings(
+        device_retry_attempts=_env_int(
+            "DEVICE_RETRY_ATTEMPTS", defaults.device_retry_attempts, minimum=0
+        ),
+        device_retry_interval_s=_env_int(
+            "DEVICE_RETRY_INTERVAL", defaults.device_retry_interval_s, minimum=2
+        ),
+    )
 
 
 def save_config(config: StreamConfig) -> None:
