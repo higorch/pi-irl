@@ -196,11 +196,11 @@ Nada mais de MediaMTX/BSBF precisa ficar aberto (sem `8000`/`8001`, RTMP, HLS, W
 
 ---
 
-## 3. Raspberry Pi — instalação completa
+## 3. Raspberry Pi — instalação
 
-### Opção A — script único (recomendado)
+Tudo é feito pelo `install.sh`. Você só precisa preencher o `.env` e rodar o script.
 
-**1. Configure o `.env` antes de instalar** (variáveis na seção [5. Arquivo `.env`](#5-arquivo-env)):
+### 1. Baixe e configure o `.env`
 
 ```bash
 git clone https://github.com/higorch/pi-irl.git
@@ -209,37 +209,47 @@ cp .env.example .env
 nano .env
 ```
 
-No mínimo, preencha:
-
 ```env
+# Obrigatório
 VPS_HOST=IP_OU_DOMINIO_DA_VPS
 SRT_PORT=8890
 STREAM_ID=irl
-```
 
-Se usar bonding, preencha também os três `BONDING_*`. O cliente BSBF é instalado e ativado no primeiro **Iniciar transmissão**, ou já na instalação com `--with-bsbf`:
-
-```env
+# Bonding (opcional): os três ou nenhum
 BONDING_SERVER=IP_VPS
 BONDING_PORT=PORTA_BSBF
 BONDING_UUID=UUID_DO_CLIENTE
+
+# Só se o sudo do Pi pedir senha
+PI_SUDO_PASSWORD=
 ```
 
-Se o sudo do Pi pedir senha, preencha também `PI_SUDO_PASSWORD` (veja **Sudo (senha do Pi)**).
+As demais variáveis têm padrão (tabela em [5. Arquivo `.env`](#5-arquivo-env)).
 
-**2. Instale:**
+### 2. Rode o instalador
 
 ```bash
-chmod +x install.sh start-pi-irl.sh
+chmod +x install.sh
 ./install.sh
 ```
 
-O `install.sh` confere o `.env` antes de instalar qualquer coisa:
-- Sem `.env`, ele cria a partir do `.env.example` e para, pedindo para você editar.
-- Se faltar algo, ou algum valor for inválido, ele lista o que corrigir e para. Isso vale para `VPS_HOST` ainda com o placeholder, portas inválidas, `BONDING_*` incompleto, IPv4 ou UUID inválido e `DEVICE_RETRY_*` que não sejam números.
-- Se a senha do sudo estiver errada, ele também para.
+Rode como usuário normal, sem `sudo`. O script faz, em ordem:
 
-Opções do `install.sh` (rode como usuário normal, sem `sudo`):
+1. **Confere o `.env`.** Se faltar algo, ou algum valor for inválido, lista o que corrigir e para sem instalar nada. Exemplos: `VPS_HOST` com o placeholder, porta inválida, `BONDING_*` incompleto, IPv4/UUID inválido, senha do sudo errada.
+2. **Autentica o sudo** com `PI_SUDO_PASSWORD`, se preenchida, e o mantém ativo até o fim.
+3. **Instala os pacotes:** FFmpeg, V4L2, ALSA, Python, git, curl.
+4. **Cria o ambiente Python** (`.venv`) e instala as dependências.
+5. **Cria o atalho** na área de trabalho e o **início automático** ao ligar o Pi.
+6. **Ajusta a câmera USB:**
+   - grava `options uvcvideo quirks=0x180 nodrop=1 timeout=5000` em `/etc/modprobe.d/uvcvideo.conf`;
+   - acrescenta `usbcore.autosuspend=-1` em `cmdline.txt` (com backup);
+   - roda `update-initramfs -u`.
+7. **Instala o cliente BSBF**, só com `--with-bsbf`. Sem a opção, o app instala sozinho no primeiro **Iniciar transmissão**.
+8. **Reinicia o Pi** em 10 s (Ctrl+C cancela), porque o ajuste da câmera só vale após o reboot.
+
+O `.env` fica com permissão `600`, legível só pelo seu usuário, já que pode guardar a senha do sudo. Rodar o script de novo é seguro: o que já está configurado não é duplicado.
+
+Opções:
 
 | Opção | O que faz |
 |-------|-----------|
@@ -249,88 +259,9 @@ Opções do `install.sh` (rode como usuário normal, sem `sudo`):
 | `--no-camera-fix` | Não aplica o ajuste da câmera |
 | `--no-reboot` | Não reinicia sozinho (avisa para rodar `sudo reboot`) |
 
-Iniciar manualmente (após o reboot o app já abre sozinho):
+### 3. Pronto
 
-```bash
-./start-pi-irl.sh
-```
-
-### Opção B — manual
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ffmpeg v4l-utils alsa-utils python3 python3-venv python3-pip git curl
-
-git clone https://github.com/higorch/pi-irl.git
-cd pi-irl
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# edite o .env
-python -m app.main
-```
-
-Cliente BSBF manual (opcional — o app faz isso sozinho ao transmitir):
-
-```bash
-curl -fsSL cld.bondingshouldbefree.org | sudo sh -s -- \
-  --server-ipv4 IP_VPS \
-  --server-port PORTA_BSBF \
-  --uuid UUID_DO_CLIENTE
-```
-
-### Câmera USB (UVC) — ajuste automático
-
-O `./install.sh` já faz sozinho:
-
-1. Grava `/etc/modprobe.d/uvcvideo.conf` com `options uvcvideo quirks=0x180 nodrop=1 timeout=5000`
-2. Acrescenta `usbcore.autosuspend=-1` no final da linha única de `/boot/firmware/cmdline.txt` (backup em `cmdline.txt.bak-pi-irl`)
-3. Roda `sudo update-initramfs -u`
-4. Ao terminar a instalação, **reinicia o Pi** (10 s para cancelar com Ctrl+C) — `uvcvideo`, `usbcore.autosuspend` e initramfs só valem após o reboot
-
-Os arquivos só são alterados se ainda não estiverem configurados (sem duplicar o `cmdline.txt`).
-
-Equivalente manual (referência):
-
-```bash
-# 1. Configura o UVC da câmera
-sudo nano /etc/modprobe.d/uvcvideo.conf
-# Conteúdo:
-# options uvcvideo quirks=0x180 nodrop=1 timeout=5000
-
-# 2. Desativa USB autosuspend no boot
-sudo nano /boot/firmware/cmdline.txt
-# Adicionar no FINAL da única linha (não crie linha nova):
-# usbcore.autosuspend=-1
-
-# 3. Atualiza e reinicia
-sudo update-initramfs -u
-sudo reboot
-```
-
-Conferir após o reboot:
-
-```bash
-cat /sys/module/uvcvideo/parameters/quirks      # 384 (= 0x180)
-cat /sys/module/usbcore/parameters/autosuspend  # -1
-```
-
-### Sudo (senha do Pi)
-
-O `install.sh` e o app (ao instalar/ativar o BSBF) usam `sudo`. No Raspberry Pi OS o usuário padrão já tem sudo sem senha. Se o seu pedir senha, escolha **uma** opção:
-
-**A) Senha no `.env`** — `PI_SUDO_PASSWORD=sua_senha`. Use aspas se tiver espaços nas pontas.
-- `install.sh`: valida a senha no início (errada → para) e mantém o sudo autenticado até o fim. Na 1ª instalação, rode `cp .env.example .env` e preencha antes.
-- App: roda `sudo -A`, com um helper de askpass (`~/.cache/pi-irl/sudo-askpass.sh`) que não guarda a senha. Ela não aparece em `ps`, não vai para o log e não é herdada pelo FFmpeg.
-- O `.env` fica em texto puro com permissão `600` (feita pelo `install.sh`) e já está no `.gitignore`.
-
-**B) Sudo sem senha** (dispensa a variável):
-
-```bash
-echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010-pi-irl
-sudo chmod 440 /etc/sudoers.d/010-pi-irl
-```
+Após o reboot, o Pi-IRL abre sozinho. Se a configuração já estiver completa, câmera e microfone salvos incluídos, ele começa a transmitir, conforme [Início automático](#início-automático-ao-ligar-o-pi). Na primeira vez, escolha câmera e microfone no app e clique em **Iniciar transmissão**; daí em diante tudo é automático.
 
 ---
 
@@ -374,10 +305,17 @@ Status do cliente no Pi: `sudo bsbf-bonding --status` · monitor web em `http://
 
 O `install.sh` cria `~/.config/autostart/pi-irl.desktop` (abre o app com `--autostart` quando a área de trabalho carrega). Ao abrir, o app:
 
-1. Confere a configuração salva (Host, ID, câmera e microfone). Incompleta → só abre, sem transmitir.
-2. Tenta conectar a câmera e o microfone USB salvos (e esperar a internet) a cada `DEVICE_RETRY_INTERVAL` segundos, até `DEVICE_RETRY_ATTEMPTS` tentativas (padrão: 10 tentativas de 10 em 10 s; `0` = sem limite).
-3. Inicia a transmissão (com bonding, se configurado). Se o FFmpeg falhar ao abrir câmera/mic nos primeiros 15 s, conta como tentativa e tenta de novo.
-4. Ao vivo por 15 s sem erro → "transmissão estável" no registro e para de tentar. Clicar em **Parar** também interrompe as tentativas.
+1. Espera `AUTOSTART_DELAY` segundos (padrão `30`) sem tocar na câmera, até o Pi, o USB, a área de trabalho e a rede terminarem de subir. Abrir a câmera logo após o boot a deixava instável: a transmissão caía 1–2 min depois.
+2. Confere a configuração salva (Host, ID, câmera e microfone). Incompleta → só abre, sem transmitir.
+3. Tenta conectar a câmera e o microfone USB salvos (e esperar a internet) a cada `DEVICE_RETRY_INTERVAL` segundos, até `DEVICE_RETRY_ATTEMPTS` tentativas (padrão: 10 tentativas de 10 em 10 s; `0` = sem limite). Se a câmera/mic acabou de aparecer no USB, espera mais um intervalo antes de abrir.
+4. Inicia a transmissão (com bonding, se configurado). Se o FFmpeg falhar ao abrir câmera/mic nos primeiros 15 s, conta como tentativa e tenta de novo.
+5. Ao vivo por 15 s sem erro → "transmissão estável" no registro e para de tentar. Clicar em **Parar** também interrompe as tentativas.
+
+**Reconexão automática** (vale também para transmissões iniciadas no botão):
+- Se a transmissão cai depois de ficar estável sem você clicar em **Parar**, o app tenta voltar com a mesma configuração. Usa as mesmas `DEVICE_RETRY_ATTEMPTS` e `DEVICE_RETRY_INTERVAL` e espera a câmera/mic reaparecerem no USB.
+- **Câmera travada:** 10 s sem quadros novos (25 s para o primeiro), o FFmpeg é reiniciado e entra na reconexão.
+- A câmera fica salva como `/dev/v4l/by-id/…` e o microfone como `hw:CARD=nome,DEV=n`. Se o USB reconectar e o Linux renumerar os dispositivos (`/dev/video0` → `/dev/video2`), o app continua achando os dois.
+- Quando a transmissão cai, o registro avisa se o Pi teve **subtensão** (fonte fraca) ou limitou a CPU por **temperatura**. São as causas mais comuns de câmera e mic USB caírem juntos.
 
 Requisitos: login automático na área de trabalho (padrão do Raspberry Pi OS) e ter transmitido ao menos uma vez pelo app (salva câmera/mic).  
 Desativar: `./install.sh --no-autostart` ou `rm ~/.config/autostart/pi-irl.desktop`.
@@ -386,9 +324,7 @@ Desativar: `./install.sh --no-autostart` ou `rm ~/.config/autostart/pi-irl.deskt
 
 ## 5. Arquivo `.env`
 
-```bash
-cp .env.example .env
-```
+Criado a partir do `.env.example` antes do `./install.sh` (veja a seção 3).
 
 | Variável | Descrição |
 |----------|-----------|
@@ -398,9 +334,10 @@ cp .env.example .env
 | `BONDING_SERVER` | IPv4 do servidor BSBF (opcional) |
 | `BONDING_PORT` | Porta do cliente BSBF (opcional) |
 | `BONDING_UUID` | UUID do cliente BSBF (opcional) |
-| `DEVICE_RETRY_ATTEMPTS` | Tentativas de conectar câmera/mic USB no boot (padrão `10`, `0` = sem limite) |
+| `AUTOSTART_DELAY` | Segundos de espera no boot antes de abrir a câmera (padrão `30`) |
+| `DEVICE_RETRY_ATTEMPTS` | Tentativas de conectar câmera/mic USB no boot e ao reconectar após queda (padrão `10`, `0` = sem limite) |
 | `DEVICE_RETRY_INTERVAL` | Segundos entre tentativas (padrão `10`, mínimo `2`) |
-| `PI_SUDO_PASSWORD` | Senha do sudo do Pi para `install.sh` e bonding (vazio = sudo sem senha). Veja **Sudo (senha do Pi)** |
+| `PI_SUDO_PASSWORD` | Senha do sudo do Pi para `install.sh` e bonding. Vazio = sudo sem senha, que é o padrão do Raspberry Pi OS. Use aspas se tiver espaços nas pontas. Não aparece em `ps` nem no registro |
 
 O `.env` completa/sobrescreve o `config.json` ao abrir o app. Não versione o `.env` (já está no `.gitignore`).
 
@@ -431,7 +368,8 @@ Bonding e a lista de redes são para Linux/Pi.
 | Código 251 / falha ao iniciar | Câmera/mic, Host SRT, firewall `8890/udp` |
 | OBS preto | Pi **Ao vivo**? `rtsp_transport=tcp`? Firewall `8554/tcp` |
 | Bonding não sobe | Mensagem no registro · `sudo bsbf-bonding --status` · `systemctl status bsbf-mptcp xray-bsbf-bonding` · porta liberada na VPS |
-| "sudo pediu senha" / "senha do sudo incorreta" | Defina/corrija `PI_SUDO_PASSWORD` no `.env` — ver **Sudo (senha do Pi)** |
-| Câmera trava/cai | Conferir `quirks`/`autosuspend` (seção Câmera USB) · rodar `./install.sh` de novo |
+| "sudo pediu senha" / "senha do sudo incorreta" | Defina/corrija `PI_SUDO_PASSWORD` no `.env` e rode `./install.sh` de novo |
+| Câmera trava/cai | `vcgencmd get_throttled` deve dar `0x0`; diferente disso é fonte fraca ou temperatura, use a fonte oficial ou um hub USB com fonte · o ajuste da câmera do `install.sh` está ativo se `cat /sys/module/uvcvideo/parameters/quirks` der `384`; senão, `./install.sh` de novo |
+| "ALSA xrun" / "Câmera indisponível" | USB ou CPU sobrecarregados: veja se há aviso de subtensão no registro, ligue câmera e mic em portas USB diferentes ou reduza resolução/FPS |
 | Não transmite ao ligar | Registro do app mostra o que falta · `ls ~/.config/autostart/` · login automático ativo |
 | MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` |

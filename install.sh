@@ -109,7 +109,7 @@ if [[ -n "$ENV_BONDING_SERVER$ENV_BONDING_PORT$ENV_BONDING_UUID" ]]; then
   fi
 fi
 
-for key in DEVICE_RETRY_ATTEMPTS DEVICE_RETRY_INTERVAL; do
+for key in AUTOSTART_DELAY DEVICE_RETRY_ATTEMPTS DEVICE_RETRY_INTERVAL; do
   value="$(env_value "$key")"
   [[ -z "$value" || "$value" =~ ^[0-9]+$ ]] || ENV_ERRORS+=("$key: use um número inteiro")
 done

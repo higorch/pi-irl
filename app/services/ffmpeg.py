@@ -130,6 +130,11 @@ class FFmpegService(QObject):
             self._process.kill()
             self._process.waitForFinished(3000)
 
+    def kill(self) -> None:
+        """Encerra sem esperar (câmera travada: o FFmpeg pode não responder ao terminate)."""
+        if self.is_running():
+            self._process.kill()
+
     def _encode_args(
         self,
         config: StreamConfig,

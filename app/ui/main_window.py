@@ -67,8 +67,8 @@ AUTO_AUDIO_CHANNELS = 1
 
 DOCS_URL = "https://github.com/higorch/pi-irl"
 
-# Início automático no boot (tentativas/intervalo vêm do .env)
-AUTOSTART_FIRST_DELAY_MS = 3000
+# Início automático no boot (espera/tentativas/intervalo vêm do .env)
+AUTOSTART_MIN_DELAY_MS = 3000
 # Ao vivo por esse tempo sem erro = conexão com câmera/mic confirmada
 AUTOSTART_STABLE_MS = 15000
 
@@ -155,6 +155,8 @@ class MainWindow(QMainWindow):
             self.setStyleSheet(APP_STYLESHEET)
 
         self._config = load_config()
+        self._config.camera = devices.stable_value(self._config.camera)
+        self._config.microphone = devices.stable_value(self._config.microphone)
         self._settings = load_app_settings()
         self._stream = StreamService(self)
         self._ffmpeg_ready = False
@@ -177,10 +179,26 @@ class MainWindow(QMainWindow):
         self._network_timer.start()
         QTimer.singleShot(50, self._sync_tab_height)
 
-        self._autostart_attempts = 0
-        self._autostart_pending = False
+        # Tentativas automáticas: "Início automático" (boot) ou "Reconexão" (queda no meio da live)
+        self._retry_title = "Início automático"
+        self._retry_attempts = 0
+        self._retry_pending = False
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._try_auto_start)
+        # Só reconecta sozinho depois que a transmissão ficou estável (evita loop com config errada)
+        self._reconnect_armed = False
+        self._live_generation = 0
+        # Câmera/mic acabaram de aparecer no USB: espera 1 intervalo antes de abrir
+        self._retry_devices_were_missing = False
         if autostart:
-            QTimer.singleShot(AUTOSTART_FIRST_DELAY_MS, self._begin_autostart)
+            delay_s = self._settings.autostart_delay_s
+            if delay_s * 1000 > AUTOSTART_MIN_DELAY_MS:
+                self._append_app_log(
+                    f"Início automático em {delay_s} s (aguardando o Pi, a câmera e a rede "
+                    "terminarem de iniciar)."
+                )
+            QTimer.singleShot(max(AUTOSTART_MIN_DELAY_MS, delay_s * 1000), self._begin_autostart)
 
     def _detect_compact_screen(self) -> bool:
         screen = QGuiApplication.primaryScreen()
@@ -1033,15 +1051,18 @@ class MainWindow(QMainWindow):
         self._refresh_video_options(prefer_recommend=False)
         self._refresh_dependencies()
 
-    def _on_start_clicked(self) -> None:
+    def _on_start_clicked(self) -> bool:
         config = self._collect_config()
         save_config(config)
-        self._stream.start(config)
+        self._config = config
+        return self._stream.start(config)
 
     def _on_stop_clicked(self) -> None:
-        if self._autostart_pending:
-            self._autostart_pending = False
-            self._append_app_log("Início automático interrompido pelo usuário.")
+        self._reconnect_armed = False
+        if self._retry_pending:
+            self._retry_pending = False
+            self._retry_timer.stop()
+            self._append_app_log(f"{self._retry_title}: tentativas interrompidas pelo usuário.")
         self._stream.stop()
 
     def _begin_autostart(self) -> None:
@@ -1054,62 +1075,99 @@ class MainWindow(QMainWindow):
                 "Início automático desativado — configuração incompleta: " + " ".join(errors)
             )
             return
-        self._autostart_pending = True
-        self._try_autostart()
+        self._retry_title = "Início automático"
+        self._retry_attempts = 0
+        self._retry_devices_were_missing = False
+        self._retry_pending = True
+        self._try_auto_start()
 
-    def _autostart_attempt_label(self) -> str:
-        limit = self._settings.device_retry_attempts
-        return f"{self._autostart_attempts}/{limit}" if limit else str(self._autostart_attempts)
-
-    def _autostart_can_retry(self) -> bool:
-        limit = self._settings.device_retry_attempts
-        return not limit or self._autostart_attempts < limit
-
-    def _schedule_autostart_retry(self, reason: str) -> None:
+    def _begin_reconnect(self) -> None:
+        """A transmissão caiu sem o usuário pedir: tenta voltar com a mesma configuração."""
+        self._reconnect_armed = False
+        self._retry_title = "Reconexão"
+        self._retry_attempts = 0
+        self._retry_devices_were_missing = False
+        self._retry_pending = True
         interval = self._settings.device_retry_interval_s
-        if not self._autostart_can_retry():
-            self._autostart_pending = False
+        self._append_app_log(f"Transmissão caiu — reconectando em {interval} s.")
+        self._retry_timer.start(interval * 1000)
+
+    def _retry_attempt_label(self) -> str:
+        limit = self._settings.device_retry_attempts
+        return f"{self._retry_attempts}/{limit}" if limit else str(self._retry_attempts)
+
+    def _retry_can_continue(self) -> bool:
+        limit = self._settings.device_retry_attempts
+        return not limit or self._retry_attempts < limit
+
+    def _schedule_retry(self, reason: str) -> None:
+        interval = self._settings.device_retry_interval_s
+        if not self._retry_can_continue():
+            self._retry_pending = False
             self._append_app_log(
-                f"Início automático cancelado após {self._autostart_attempts} tentativas — {reason}."
+                f"{self._retry_title}: desistindo após {self._retry_attempts} tentativas — {reason}."
             )
             return
         self._append_app_log(
-            f"Início automático ({self._autostart_attempt_label()}): {reason} — "
+            f"{self._retry_title} ({self._retry_attempt_label()}): {reason} — "
             f"nova tentativa em {interval} s."
         )
-        QTimer.singleShot(interval * 1000, self._try_autostart)
+        self._retry_timer.start(interval * 1000)
 
-    def _try_autostart(self) -> None:
+    def _try_auto_start(self) -> None:
         """Tenta conectar câmera/mic USB e iniciar a transmissão com a config salva."""
-        if not self._autostart_pending or self._stream.is_active:
+        if not self._retry_pending or self._stream.is_active:
             return
-        self._autostart_attempts += 1
+        self._retry_attempts += 1
         saved = self._config
+        saved.camera = devices.stable_value(saved.camera)
+        saved.microphone = devices.stable_value(saved.microphone)
 
         missing = self._autostart_missing(saved)
         if missing:
-            self._schedule_autostart_retry("não encontrado: " + ", ".join(missing))
+            self._retry_devices_were_missing = True
+            self._schedule_retry("não encontrado: " + ", ".join(missing))
+            return
+
+        if self._retry_devices_were_missing:
+            # A câmera ainda inicializa logo após aparecer; abrir agora a deixa instável
+            self._retry_devices_were_missing = False
+            self._retry_attempts -= 1
+            interval = self._settings.device_retry_interval_s
+            self._append_app_log(
+                f"{self._retry_title}: câmera e microfone detectados — aguardando {interval} s "
+                "para estabilizarem."
+            )
+            self._retry_timer.start(interval * 1000)
             return
 
         self._apply_config_to_ui(saved)
         self._append_app_log(
-            f"Início automático ({self._autostart_attempt_label()}): "
+            f"{self._retry_title} ({self._retry_attempt_label()}): "
             "câmera e microfone encontrados — iniciando transmissão."
         )
-        self._on_start_clicked()
+        if not self._on_start_clicked():
+            self._retry_pending = False
+            self._append_app_log(f"{self._retry_title}: configuração inválida, sem novas tentativas.")
 
-    def _on_autostart_status(self, status: StreamStatus) -> None:
-        if not self._autostart_pending:
-            return
+    def _on_auto_status(self, status: StreamStatus) -> None:
         if status == StreamStatus.LIVE:
-            QTimer.singleShot(AUTOSTART_STABLE_MS, self._confirm_autostart)
+            self._live_generation += 1
+            generation = self._live_generation
+            QTimer.singleShot(AUTOSTART_STABLE_MS, lambda: self._confirm_stable(generation))
         elif status == StreamStatus.ERROR:
-            self._schedule_autostart_retry("falha ao conectar câmera/microfone ou servidor")
+            if self._retry_pending:
+                self._schedule_retry("falha ao conectar câmera/microfone ou servidor")
+            elif self._reconnect_armed:
+                self._begin_reconnect()
 
-    def _confirm_autostart(self) -> None:
-        if self._autostart_pending and self._stream.status == StreamStatus.LIVE:
-            self._autostart_pending = False
-            self._append_app_log("Início automático: transmissão estável.")
+    def _confirm_stable(self, generation: int) -> None:
+        if generation != self._live_generation or self._stream.status != StreamStatus.LIVE:
+            return
+        self._reconnect_armed = True
+        if self._retry_pending:
+            self._retry_pending = False
+            self._append_app_log(f"{self._retry_title}: transmissão estável.")
 
     def _autostart_missing(self, saved: StreamConfig) -> list[str]:
         def has(combo: QComboBox, value: str) -> bool:
@@ -1228,7 +1286,7 @@ class MainWindow(QMainWindow):
             self.health_label.setText("Saúde: —")
             if self._devices_dirty:
                 QTimer.singleShot(0, self._on_devices_changed)
-        self._on_autostart_status(enum_status)
+        self._on_auto_status(enum_status)
         self._refresh_internet_card()
 
     def _set_status_badge(self, status: StreamStatus) -> None:

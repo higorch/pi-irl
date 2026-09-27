@@ -36,6 +36,8 @@ class AppSettings:
     # Início automático no boot: tentativas de conectar câmera/mic USB (0 = sem limite)
     device_retry_attempts: int = 10
     device_retry_interval_s: int = 10
+    # Espera após o app abrir no boot antes de tocar na câmera (USB/desktop/rede terminam de subir)
+    autostart_delay_s: int = 30
 
 
 def project_root() -> Path:
@@ -137,6 +139,9 @@ def load_app_settings() -> AppSettings:
         ),
         device_retry_interval_s=_env_int(
             "DEVICE_RETRY_INTERVAL", defaults.device_retry_interval_s, minimum=2
+        ),
+        autostart_delay_s=_env_int(
+            "AUTOSTART_DELAY", defaults.autostart_delay_s, minimum=0
         ),
     )
 

@@ -75,6 +75,54 @@ def _list_all_cached() -> tuple[list[DeviceInfo], list[DeviceInfo]]:
     return cameras, mics
 
 
+_ALSA_HW_RE = re.compile(r"^(?:plug)?hw:(\d+)(?:,(\d+))?$")
+
+
+def stable_value(value: str) -> str:
+    """Converte /dev/videoN e hw:N,M (mudam ao reconectar o USB) para nomes estáveis.
+
+    Câmera → /dev/v4l/by-id/…  ·  Microfone → hw:CARD=<id>,DEV=M. Sem equivalente: devolve igual.
+    """
+    text = (value or "").strip()
+    if platform.system() != "Linux" or not text:
+        return text
+    if re.fullmatch(r"/dev/video\d+", text):
+        return _v4l2_stable_path(text)
+    match = _ALSA_HW_RE.match(text)
+    if match:
+        card_id = _alsa_card_id(match.group(1))
+        if card_id:
+            return f"hw:CARD={card_id},DEV={match.group(2) or 0}"
+    return text
+
+
+def _v4l2_stable_path(path: str) -> str:
+    """Link de /dev/v4l/by-id (ou by-path) que aponta para o /dev/videoN."""
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        return path
+    for folder in ("/dev/v4l/by-id", "/dev/v4l/by-path"):
+        try:
+            links = sorted(Path(folder).iterdir(), key=lambda p: ("index0" not in p.name, p.name))
+        except OSError:
+            continue
+        for link in links:
+            try:
+                if os.path.realpath(link) == target:
+                    return str(link)
+            except OSError:
+                continue
+    return path
+
+
+def _alsa_card_id(card: str) -> str:
+    try:
+        return Path(f"/proc/asound/card{card}/id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def _sysfs_is_usb(device_link: Path) -> bool:
     """True se o link `device` do sysfs aponta para um dispositivo no barramento USB."""
     try:
@@ -108,7 +156,7 @@ def _list_linux_cameras() -> list[DeviceInfo]:
                 continue
             # "SJCAM SJ4000 (usb-xhci-hcd.0-1)" → "SJCAM SJ4000"
             label = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip() or path
-            devices.append(DeviceInfo(label=label, value=path))
+            devices.append(DeviceInfo(label=label, value=_v4l2_stable_path(path)))
         return _unique_devices(devices)
 
     # Fallback sem v4l2-ctl --list-devices
@@ -125,7 +173,7 @@ def _list_linux_cameras() -> list[DeviceInfo]:
         if not _is_v4l2_video_capture_fast(path):
             continue
         label = name or str(path)
-        devices.append(DeviceInfo(label=label, value=str(path)))
+        devices.append(DeviceInfo(label=label, value=_v4l2_stable_path(str(path))))
 
     return _unique_devices(devices)
 
@@ -252,7 +300,7 @@ def _list_linux_microphones() -> list[DeviceInfo]:
         usb = _is_usb_sound_card(card)
         if not usb and _VIRTUAL_SOUND_CARD.search(f"{card_desc} {name}"):
             continue
-        value = f"hw:{card},{device}"
+        value = stable_value(f"hw:{card},{device}")
         # arecord: "USB Audio [USB Audio]" → nome limpo
         label = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip() or value
         devices.append(DeviceInfo(label=_mic_label(label, usb=usb), value=value))

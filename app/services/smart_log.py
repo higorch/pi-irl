@@ -18,14 +18,18 @@ _NOISE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CAPTURE_LOST_RE = re.compile(r"No such device|Não existe|Input/output error", re.I)
+_FFMPEG_PREFIX_RE = re.compile(r"^\[[^\]]*@\s*0x[0-9a-f]+\]\s*", re.I)
+_REPEAT_WINDOW_S = 10.0
+
 _ERROR_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"cannot set channel count", re.I),
         "Microfone: falha ao abrir canais (tente outro device / mono).",
     ),
     (
-        re.compile(r"No such device|Não existe|Input/output error", re.I),
-        "Dispositivo de captura indisponível.",
+        re.compile(r"ALSA buffer xrun", re.I),
+        "Microfone: amostras de áudio perdidas (xrun) — CPU ou USB sobrecarregado.",
     ),
     (
         re.compile(r"Connection timed out|Connection refused|Failed to open", re.I),
@@ -66,8 +70,23 @@ class SmartLogFilter:
         self._last_health_at = 0.0
         self._min_health_interval_s = min_health_interval_s
         self.health = HealthStats()
+        self._recent_events: dict[str, float] = {}
 
     def process(self, raw: str) -> tuple[str | None, HealthStats | None]:
+        event, health = self._process(raw)
+        if event:
+            now = time.monotonic()
+            self._recent_events = {
+                text: at
+                for text, at in self._recent_events.items()
+                if now - at < _REPEAT_WINDOW_S
+            }
+            if event in self._recent_events:
+                return None, health
+            self._recent_events[event] = now
+        return event, health
+
+    def _process(self, raw: str) -> tuple[str | None, HealthStats | None]:
         """
         Retorna (evento_para_log | None, health_atualizado | None).
 
@@ -88,6 +107,9 @@ class SmartLogFilter:
 
         if _NOISE_RE.search(line):
             return None, None
+
+        if _CAPTURE_LOST_RE.search(line):
+            return _capture_lost_message(line), None
 
         for pattern, message in _ERROR_HINTS:
             if pattern.search(line):
@@ -156,6 +178,18 @@ class SmartLogFilter:
             self.health.bitrate_kbps = bitrate
         if fps is not None:
             self.health.fps = fps
+
+
+def _capture_lost_message(line: str) -> str:
+    lower = line.lower()
+    if "video4linux" in lower or "v4l2" in lower:
+        source = "Câmera"
+    elif "alsa" in lower:
+        source = "Microfone"
+    else:
+        source = "Dispositivo de captura"
+    detail = _shorten(_FFMPEG_PREFIX_RE.sub("", line), 90)
+    return f"{source} indisponível (desconectou do USB ou travou): {detail}"
 
 
 def _shorten(text: str, limit: int) -> str:

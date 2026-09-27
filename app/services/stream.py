@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QProcess, Signal
+import re
+import time
+
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from app.models.stream_config import StreamConfig, StreamStatus
 from app.services import bonding as bonding_service
 from app.services.ffmpeg import FFmpegService
+from app.services.system_health import power_warnings
+
+_FRAME_RE = re.compile(r"frame=\s*(\d+)")
+# Sem quadro novo por esse tempo = câmera travada (1º quadro tem mais folga para abrir a câmera)
+STALL_TIMEOUT_S = 10.0
+STALL_FIRST_FRAME_S = 25.0
 
 
 class StreamService(QObject):
@@ -23,9 +32,16 @@ class StreamService(QObject):
         self._bonding = bonding_service.BondingManager(self)
         self._pending_config: StreamConfig | None = None
         self._user_stopping = False
+        self._stalled = False
+        self._last_frame = -1
+        self._last_progress_at = 0.0
+        self._stall_timer = QTimer(self)
+        self._stall_timer.setInterval(2000)
+        self._stall_timer.timeout.connect(self._check_stall)
 
         self._bonding.log_line.connect(self.log_line.emit)
         self._bonding.finished.connect(self._on_bonding_ready)
+        self._ffmpeg.log_line.connect(self._track_progress)
         self._ffmpeg.log_line.connect(self.log_line.emit)
         self._ffmpeg.started.connect(self._on_ffmpeg_started)
         self._ffmpeg.finished.connect(self._on_ffmpeg_finished)
@@ -122,37 +138,68 @@ class StreamService(QObject):
         self._ffmpeg.start(config)
 
     def _set_status(self, status: StreamStatus) -> None:
+        if status == self._status:
+            return
         self._status = status
         self.status_changed.emit(status.value)
 
     def _on_ffmpeg_started(self) -> None:
+        self._stalled = False
+        self._last_frame = -1
+        self._last_progress_at = time.monotonic()
+        self._stall_timer.start()
         self._set_status(StreamStatus.LIVE)
+
+    def _track_progress(self, line: str) -> None:
+        match = _FRAME_RE.search(line)
+        if match and int(match.group(1)) > self._last_frame:
+            self._last_frame = int(match.group(1))
+            self._last_progress_at = time.monotonic()
+
+    def _check_stall(self) -> None:
+        if self._status != StreamStatus.LIVE or not self._ffmpeg.is_running():
+            return
+        limit = STALL_TIMEOUT_S if self._last_frame >= 0 else STALL_FIRST_FRAME_S
+        idle = time.monotonic() - self._last_progress_at
+        if idle < limit:
+            return
+        self._stalled = True
+        self._stall_timer.stop()
+        self.log_line.emit(
+            f"Câmera travada: nenhum quadro novo há {idle:.0f} s — reiniciando a captura."
+        )
+        self._ffmpeg.kill()
 
     def _on_ffmpeg_finished(
         self,
         exit_code: int,
         exit_status: QProcess.ExitStatus,
     ) -> None:
+        self._stall_timer.stop()
         if self._user_stopping:
             self._set_status(StreamStatus.OFFLINE)
             self.log_line.emit("Transmissão encerrada.")
             self._user_stopping = False
             return
 
-        if exit_status == QProcess.ExitStatus.CrashExit or exit_code != 0:
-            self._set_status(StreamStatus.ERROR)
+        # Sem pedido do usuário, qualquer saída é queda (câmera removida pode sair com código 0)
+        if self._stalled:
+            message = "Transmissão interrompida: câmera travada."
+        elif exit_status == QProcess.ExitStatus.CrashExit or exit_code != 0:
             hint = ""
             if exit_code in (1, 251, 4294967041):
-                hint = (
-                    " Confira câmera/mic, canais ALSA e Host/SRT da VPS."
-                )
-            self.log_line.emit(
-                f"Transmissão falhou (código {exit_code}).{hint}"
-            )
+                hint = " Confira câmera/mic, canais ALSA e Host/SRT da VPS."
+            message = f"Transmissão falhou (código {exit_code}).{hint}"
         else:
-            self._set_status(StreamStatus.OFFLINE)
-            self.log_line.emit("Transmissão finalizada.")
+            message = "Transmissão interrompida: o FFmpeg encerrou sozinho (câmera/mic sumiu?)."
+        self.log_line.emit(message)
+        for warning in power_warnings():
+            self.log_line.emit(warning)
+        self._set_status(StreamStatus.ERROR)
 
     def _on_ffmpeg_error(self, message: str) -> None:
-        self._set_status(StreamStatus.ERROR)
+        if self._stalled or self._user_stopping:
+            return
+        self._stall_timer.stop()
         self.log_line.emit(message)
+        self._set_status(StreamStatus.ERROR)
