@@ -200,25 +200,16 @@ Nada mais de MediaMTX/BSBF precisa ficar aberto (sem `8000`/`8001`, RTMP, HLS, W
 
 ### Opção A — script único (recomendado)
 
+**1. Configure o `.env` antes de instalar** (variáveis na seção [5. Arquivo `.env`](#5-arquivo-env)):
+
 ```bash
 git clone https://github.com/higorch/pi-irl.git
 cd pi-irl
-chmod +x install.sh start-pi-irl.sh
-./install.sh
-nano .env   # o install.sh cria a partir do .env.example
+cp .env.example .env
+nano .env
 ```
 
-Opções do `install.sh` (rode como usuário normal, sem `sudo`):
-
-| Opção | O que faz |
-|-------|-----------|
-| *(nenhuma)* | FFmpeg, V4L2, ALSA, Python/.venv, atalho, **início automático** ao ligar o Pi, **ajuste da câmera** e **reboot** no final |
-| `--with-bsbf --server IP --port PORTA --uuid UUID` | Instala o cliente BSBF já na instalação (opcional: o app instala sozinho ao transmitir) |
-| `--no-autostart` | Remove/não cria o início automático |
-| `--no-camera-fix` | Não aplica o ajuste da câmera |
-| `--no-reboot` | Não reinicia sozinho (avisa para rodar `sudo reboot`) |
-
-No `.env`, preencha pelo menos:
+No mínimo, preencha:
 
 ```env
 VPS_HOST=IP_OU_DOMINIO_DA_VPS
@@ -226,7 +217,7 @@ SRT_PORT=8890
 STREAM_ID=irl
 ```
 
-Com bonding, basta preencher no `.env` (ou no card Bonding do app) — o cliente BSBF é instalado/ativado no primeiro **Iniciar transmissão**:
+Se usar bonding, preencha também os três `BONDING_*`. O cliente BSBF é instalado e ativado no primeiro **Iniciar transmissão**, ou já na instalação com `--with-bsbf`:
 
 ```env
 BONDING_SERVER=IP_VPS
@@ -234,7 +225,31 @@ BONDING_PORT=PORTA_BSBF
 BONDING_UUID=UUID_DO_CLIENTE
 ```
 
-Iniciar:
+Se o sudo do Pi pedir senha, preencha também `PI_SUDO_PASSWORD` (veja **Sudo (senha do Pi)**).
+
+**2. Instale:**
+
+```bash
+chmod +x install.sh start-pi-irl.sh
+./install.sh
+```
+
+O `install.sh` confere o `.env` antes de instalar qualquer coisa:
+- Sem `.env`, ele cria a partir do `.env.example` e para, pedindo para você editar.
+- Se faltar algo, ou algum valor for inválido, ele lista o que corrigir e para. Isso vale para `VPS_HOST` ainda com o placeholder, portas inválidas, `BONDING_*` incompleto, IPv4 ou UUID inválido e `DEVICE_RETRY_*` que não sejam números.
+- Se a senha do sudo estiver errada, ele também para.
+
+Opções do `install.sh` (rode como usuário normal, sem `sudo`):
+
+| Opção | O que faz |
+|-------|-----------|
+| *(nenhuma)* | FFmpeg, V4L2, ALSA, Python/.venv, atalho, **início automático** ao ligar o Pi, **ajuste da câmera** e **reboot** no final |
+| `--with-bsbf` | Instala o cliente BSBF já na instalação com os `BONDING_*` do `.env` (opcional, porque o app instala sozinho ao transmitir). `--server`/`--port`/`--uuid` sobrescrevem |
+| `--no-autostart` | Remove/não cria o início automático |
+| `--no-camera-fix` | Não aplica o ajuste da câmera |
+| `--no-reboot` | Não reinicia sozinho (avisa para rodar `sudo reboot`) |
+
+Iniciar manualmente (após o reboot o app já abre sozinho):
 
 ```bash
 ./start-pi-irl.sh

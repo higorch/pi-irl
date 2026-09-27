@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Instala dependências do Pi-IRL no Raspberry Pi / Linux.
+# Antes: cp .env.example .env && nano .env   (o install confere e para se faltar algo)
 # Uso:
 #   chmod +x install.sh
 #   ./install.sh
-#   ./install.sh --with-bsbf --server IP --port 16384 --uuid UUID
+#   ./install.sh --with-bsbf        # usa BONDING_* do .env (ou --server IP --port P --uuid U)
 #   ./install.sh --no-autostart --no-camera-fix --no-reboot
 
 set -euo pipefail
@@ -21,11 +22,11 @@ BSBF_UUID=""
 
 usage() {
   cat <<'EOF'
-Uso: ./install.sh [opções]
-  --with-bsbf          Instala o cliente BSBF agora (requer --server --port --uuid)
-  --server IP          IPv4 do servidor BSBF
-  --port PORTA         Porta do cliente BSBF
-  --uuid UUID          UUID do cliente BSBF
+Uso: ./install.sh [opções]   (configure o .env antes: cp .env.example .env && nano .env)
+  --with-bsbf          Instala o cliente BSBF agora (dados do BONDING_* do .env)
+  --server IP          IPv4 do servidor BSBF (sobrescreve BONDING_SERVER)
+  --port PORTA         Porta do cliente BSBF (sobrescreve BONDING_PORT)
+  --uuid UUID          UUID do cliente BSBF (sobrescreve BONDING_UUID)
   --no-autostart       Não inicia o Pi-IRL (nem a transmissão) ao ligar o Pi
   --no-camera-fix      Não aplica o ajuste UVC / USB autosuspend da câmera
   --no-reboot          Não reinicia sozinho ao final da instalação
@@ -56,12 +57,18 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exit 1
 fi
 
-if [[ ! -f .env && -f .env.example ]]; then
+if [[ ! -f .env ]]; then
   cp .env.example .env
-  echo "==> Criado .env a partir de .env.example — edite VPS_HOST antes de transmitir"
+  chmod 600 .env
+  echo "==> Criado .env a partir de .env.example."
+  echo "    Configure o .env antes de instalar (VPS_HOST, SRT_PORT, STREAM_ID e, se usar,"
+  echo "    BONDING_* e PI_SUDO_PASSWORD):"
+  echo "      nano .env"
+  echo "    Depois rode de novo: ./install.sh"
+  exit 1
 fi
 # .env pode guardar a senha do sudo
-[[ -f .env ]] && chmod 600 .env
+chmod 600 .env
 
 # Valor de uma chave do .env (sem executar o arquivo): aspas e espaços/CR nas pontas removidos
 env_value() {
@@ -75,6 +82,50 @@ env_value() {
   value="${value%[\"\']}"
   printf '%s' "$value"
 }
+
+echo "==> Conferindo o .env"
+ENV_ERRORS=()
+is_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
+
+VPS_HOST_V="$(env_value VPS_HOST)"
+if [[ -z "$VPS_HOST_V" || "$VPS_HOST_V" == "IP_OU_DOMINIO_DA_VPS" ]]; then
+  ENV_ERRORS+=("VPS_HOST: informe o IP ou domínio da VPS (MediaMTX)")
+fi
+is_port "$(env_value SRT_PORT)" || ENV_ERRORS+=("SRT_PORT: porta inválida (padrão 8890)")
+[[ -n "$(env_value STREAM_ID)" ]] || ENV_ERRORS+=("STREAM_ID: informe o path do stream (padrão irl)")
+
+ENV_BONDING_SERVER="$(env_value BONDING_SERVER)"
+ENV_BONDING_PORT="$(env_value BONDING_PORT)"
+ENV_BONDING_UUID="$(env_value BONDING_UUID)"
+if [[ -n "$ENV_BONDING_SERVER$ENV_BONDING_PORT$ENV_BONDING_UUID" ]]; then
+  if [[ -z "$ENV_BONDING_SERVER" || -z "$ENV_BONDING_PORT" || -z "$ENV_BONDING_UUID" ]]; then
+    ENV_ERRORS+=("BONDING_*: preencha BONDING_SERVER, BONDING_PORT e BONDING_UUID (ou deixe os três vazios)")
+  else
+    [[ "$ENV_BONDING_SERVER" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+      || ENV_ERRORS+=("BONDING_SERVER: deve ser um IPv4 (ex.: 203.0.113.10)")
+    is_port "$ENV_BONDING_PORT" || ENV_ERRORS+=("BONDING_PORT: porta inválida")
+    [[ "$ENV_BONDING_UUID" =~ ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$ ]] \
+      || ENV_ERRORS+=("BONDING_UUID: UUID inválido")
+  fi
+fi
+
+for key in DEVICE_RETRY_ATTEMPTS DEVICE_RETRY_INTERVAL; do
+  value="$(env_value "$key")"
+  [[ -z "$value" || "$value" =~ ^[0-9]+$ ]] || ENV_ERRORS+=("$key: use um número inteiro")
+done
+
+if (( ${#ENV_ERRORS[@]} )); then
+  echo "O .env precisa ser configurado antes de instalar:"
+  printf '  - %s\n' "${ENV_ERRORS[@]}"
+  echo "Edite com: nano .env   e rode de novo: ./install.sh"
+  exit 1
+fi
+echo ".env ok (VPS: $VPS_HOST_V$([[ -n "$ENV_BONDING_SERVER" ]] && echo ", bonding: $ENV_BONDING_SERVER:$ENV_BONDING_PORT"))"
+
+# --with-bsbf sem --server/--port/--uuid usa os BONDING_* do .env
+BSBF_SERVER="${BSBF_SERVER:-$ENV_BONDING_SERVER}"
+BSBF_PORT="${BSBF_PORT:-$ENV_BONDING_PORT}"
+BSBF_UUID="${BSBF_UUID:-$ENV_BONDING_UUID}"
 
 SUDO_PASSWORD="${PI_SUDO_PASSWORD:-$(env_value PI_SUDO_PASSWORD)}"
 unset PI_SUDO_PASSWORD
@@ -170,7 +221,7 @@ fi
 
 if [[ "$WITH_BSBF" -eq 1 ]]; then
   if [[ -z "$BSBF_SERVER" || -z "$BSBF_PORT" || -z "$BSBF_UUID" ]]; then
-    echo "BSBF: informe --server, --port e --uuid"
+    echo "BSBF: preencha BONDING_SERVER, BONDING_PORT e BONDING_UUID no .env (ou --server/--port/--uuid)"
     exit 1
   fi
   echo "==> Instalando cliente BSBF"
@@ -178,10 +229,10 @@ if [[ "$WITH_BSBF" -eq 1 ]]; then
     --server-ipv4 "$BSBF_SERVER" \
     --server-port "$BSBF_PORT" \
     --uuid "$BSBF_UUID"
-  echo "BSBF instalado. Preencha os mesmos dados no card Bonding da aba Conexões do app."
+  echo "BSBF instalado ($BSBF_SERVER:$BSBF_PORT). O app lê os mesmos dados do .env."
 else
   echo "==> BSBF: o app instala o cliente sozinho ao iniciar a transmissão"
-  echo "    se servidor, porta e UUID estiverem preenchidos no card Bonding."
+  echo "    se BONDING_* estiverem preenchidos no .env (ou no card Bonding)."
 fi
 
 # -k ignora a senha em cache do apt acima, para testar como o app vai rodar

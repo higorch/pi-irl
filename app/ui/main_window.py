@@ -1332,7 +1332,7 @@ class MainWindow(QMainWindow):
             text = f"✓  Bonding será reconfigurado para {server}:{port} ao iniciar a transmissão."
             level = "alertOk"
         elif status.active:
-            text = ""
+            text = f"✓  Bonding ativo · {server}:{port} · conexões de internet agregadas."
             level = "alertOk"
         else:
             text = f"✓  Bonding configurado · {server}:{port} · sobe ao iniciar a transmissão."
