@@ -258,11 +258,11 @@ Abas:
 |-----|----------|
 | **Dispositivos** | Câmera e microfone conectados |
 | **Conexão** | Host MediaMTX, porta SRT, Stream ID, URL RTSP do OBS |
-| **Internet (bonding)** | Links Wi‑Fi/4G/cabo + dados BSBF |
+| **Conexões** | Card Internet (conexões ativas) + card Bonding (BSBF e avisos) |
 
 1. Em **Conexão**, confira Host / porta / ID (ou venha do `.env`).  
 2. Em **Dispositivos**, escolha câmera e mic.  
-3. Em **Internet (bonding)**, veja as redes; preencha BSBF só se for usar.  
+3. Em **Conexões**, veja as redes ativas; preencha o Bonding (BSBF) só se for usar.  
 4. Clique **Iniciar transmissão**.  
 5. No OBS: Media Source → `rtsp://IP_VPS:8554/irl`  
    - Formato de entrada: vazio  

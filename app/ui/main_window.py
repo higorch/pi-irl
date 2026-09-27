@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPolygonF,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,7 +48,7 @@ from app.services.media_profile import (
     recommend_defaults,
     suggested_bitrate,
 )
-from app.services.network import list_network_links
+from app.services.network import NetworkLink, list_network_links
 from app.services.smart_log import SmartLogFilter
 from app.services.stream import StreamService
 from app.ui.styles import APP_STYLESHEET, COMPACT_STYLESHEET
@@ -62,6 +63,8 @@ AUTO_BITRATE_KBPS = 4000
 AUTO_GOP = 48
 AUTO_AUDIO_CHANNELS = 1
 
+DOCS_URL = "https://github.com/higorch/pi-irl"
+
 ARROW_COLOR = "#9aa3b5"
 # Telas ~3.5" (ex.: 480x320) e afins
 SMALL_SCREEN_WIDTH = 700
@@ -70,6 +73,13 @@ SMALL_SCREEN_HEIGHT = 500
 
 class SelectBox(QComboBox):
     """Combo com seta própria: o stylesheet remove a seta nativa do Qt."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
 
     def paintEvent(self, event: QPaintEvent) -> None:
         super().paintEvent(event)
@@ -90,6 +100,29 @@ class SelectBox(QComboBox):
             ]
         )
         painter.drawPolygon(arrow)
+
+
+class NumberBox(QSpinBox):
+    """Spin box que só muda digitando ou pelas setas, nunca pela roda do mouse."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        if self.minimumHeight() > 0:
+            hint.setHeight(self.minimumHeight())
+        return hint
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        if self.minimumHeight() > 0:
+            hint.setHeight(self.minimumHeight())
+        return hint
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
 
 
 class MainWindow(QMainWindow):
@@ -196,7 +229,7 @@ class MainWindow(QMainWindow):
         self._tab_buttons: list[QPushButton] = []
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
-        labels = ("Dispositivos", "Conexão", "Internet (bonding)")
+        labels = ("Dispositivos", "Servidor (VPS)", "Conexões")
         for index, label in enumerate(labels):
             button = QPushButton(label)
             button.setObjectName("tabButton")
@@ -246,6 +279,7 @@ class MainWindow(QMainWindow):
         internet_layout.setContentsMargins(0, 0, 0, 0)
         internet_layout.setSpacing(self._tab_pad)
         internet_layout.addWidget(self._build_internet_card())
+        internet_layout.addWidget(self._build_bonding_card())
 
         self._tab_stack.addWidget(devices_page)
         self._tab_stack.addWidget(connection_page)
@@ -261,6 +295,8 @@ class MainWindow(QMainWindow):
         return wrap
 
     def _on_tab_changed(self, index: int) -> None:
+        if index == self._tab_stack.currentIndex():
+            return
         self._tab_stack.setCurrentIndex(index)
         self._sync_tab_height()
 
@@ -269,16 +305,14 @@ class MainWindow(QMainWindow):
         page = self._tab_stack.currentWidget()
         if page is None:
             return
-        page.setMinimumHeight(0)
-        page.adjustSize()
-        height = max(page.sizeHint().height(), page.minimumSizeHint().height())
-        self._tab_stack.setFixedHeight(height)
-        panel = self._tab_stack.parentWidget()
-        if panel is not None:
-            panel.adjustSize()
-        wrap = getattr(self, "main_tabs", None)
-        if wrap is not None:
-            wrap.adjustSize()
+        layout = page.layout()
+        width = self._tab_stack.width()
+        if layout is not None and layout.hasHeightForWidth() and width > 0:
+            height = layout.heightForWidth(width)
+        else:
+            height = page.sizeHint().height()
+        if height > 0 and self._tab_stack.height() != height:
+            self._tab_stack.setFixedHeight(height)
 
     def _build_header(self) -> QWidget:
         header = QWidget()
@@ -331,11 +365,11 @@ class MainWindow(QMainWindow):
         title = QLabel("Status")
         title.setObjectName("depsTitle")
 
-        self.recheck_deps_button = QPushButton("↻")
+        self.recheck_deps_button = QPushButton("Atualizar")
         self.recheck_deps_button.setObjectName("depsRecheckButton")
         self.recheck_deps_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.recheck_deps_button.setToolTip("Verificar novamente")
-        self.recheck_deps_button.setFixedSize(28, 28)
+        self.recheck_deps_button.setFixedHeight(28)
 
         top.addWidget(title)
         top.addStretch(1)
@@ -495,13 +529,13 @@ class MainWindow(QMainWindow):
         return wrap
 
     def _build_connection_card(self) -> QFrame:
-        card, layout = self._make_card("Conexão")
+        card, layout = self._make_card("Servidor (VPS)")
 
         self.host_edit = QLineEdit()
         self.host_edit.setPlaceholderText("IP ou URL do servidor")
         self.host_edit.setClearButtonEnabled(True)
 
-        self.srt_port_spin = QSpinBox()
+        self.srt_port_spin = NumberBox()
         self.srt_port_spin.setRange(1, 65535)
         self.srt_port_spin.setValue(8890)
 
@@ -553,24 +587,70 @@ class MainWindow(QMainWindow):
         return card
 
     def _build_internet_card(self) -> QFrame:
-        card, layout = self._make_card("Internet (bonding)")
+        card, layout = self._make_card("Internet")
 
-        self.network_links_label = QLabel("Procurando conexões…")
-        self.network_links_label.setObjectName("rtspHint")
-        self.network_links_label.setWordWrap(True)
-        self.network_links_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        self._network_rows_key: tuple | None = None
+        self.network_list = QWidget()
+        self.network_list_layout = QVBoxLayout(self.network_list)
+        self.network_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.network_list_layout.setSpacing(8)
+
+        self.network_empty_label = QLabel(
+            "Nenhuma conexão ativa detectada, conecte o Raspberry no Wi‑Fi, cabo ou modem portátil."
         )
+        self.network_empty_label.setObjectName("rtspHint")
+        self.network_empty_label.setWordWrap(True)
 
-        self.bonding_status_label = QLabel("Bonding: —")
-        self.bonding_status_label.setObjectName("rtspHint")
-        self.bonding_status_label.setWordWrap(True)
+        layout.addWidget(self.network_list)
+        layout.addWidget(self.network_empty_label)
+        return card
+
+    def _network_row(self, link: NetworkLink) -> QFrame:
+        row = QFrame()
+        row.setObjectName("netRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(12, 8, 12, 8)
+        row_layout.setSpacing(12)
+
+        name = QLabel(link.label)
+        name.setObjectName("netName")
+        meta_parts = [link.iface] + ([link.detail] if link.detail else [])
+        meta = QLabel(" · ".join(meta_parts))
+        meta.setObjectName("netMeta")
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+        text_col.addWidget(name)
+        text_col.addWidget(meta)
+
+        ip = QLabel(link.ipv4)
+        ip.setObjectName("netIp")
+        ip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        routed = link.has_default_route
+        chip = QLabel("internet" if routed else "sem rota")
+        chip.setObjectName("depsChipOk" if routed else "netChipWarn")
+
+        center = Qt.AlignmentFlag.AlignVCenter
+        row_layout.addLayout(text_col, stretch=1)
+        row_layout.addWidget(ip, alignment=center)
+        row_layout.addWidget(chip, alignment=center)
+        return row
+
+    def _build_bonding_card(self) -> QFrame:
+        card, layout = self._make_card("Bonding")
+
+        self.bonding_alert = QLabel("")
+        self.bonding_alert.setObjectName("alertWarning")
+        self.bonding_alert.setWordWrap(True)
+        self.bonding_alert.setTextFormat(Qt.TextFormat.RichText)
+        self.bonding_alert.setOpenExternalLinks(True)
 
         self.bonding_server_edit = QLineEdit()
         self.bonding_server_edit.setPlaceholderText("IP do servidor BSBF")
         self.bonding_server_edit.setClearButtonEnabled(True)
 
-        self.bonding_port_spin = QSpinBox()
+        self.bonding_port_spin = NumberBox()
         self.bonding_port_spin.setRange(0, 65535)
         self.bonding_port_spin.setSpecialValueText("—")
         self.bonding_port_spin.setValue(0)
@@ -587,8 +667,7 @@ class MainWindow(QMainWindow):
         bonding_hint.setObjectName("rtspHint")
         bonding_hint.setWordWrap(True)
 
-        layout.addWidget(self.network_links_label)
-        layout.addWidget(self.bonding_status_label)
+        layout.addWidget(self.bonding_alert)
         layout.addWidget(self._field("Servidor BSBF", self.bonding_server_edit))
         layout.addWidget(
             self._row(
@@ -617,12 +696,11 @@ class MainWindow(QMainWindow):
         self.fps_combo = SelectBox()
         self.fps_combo.setEditable(False)
 
-        self.bitrate_spin = QSpinBox()
+        self.bitrate_spin = NumberBox()
         self.bitrate_spin.setRange(500, 12000)
         self.bitrate_spin.setSingleStep(100)
         self.bitrate_spin.setSuffix(" kbps")
         self.bitrate_spin.setValue(AUTO_BITRATE_KBPS)
-        self.bitrate_spin.setFixedHeight(self._input_height)
 
         layout.addWidget(self._field("Câmera", camera_input))
         layout.addWidget(
@@ -848,6 +926,9 @@ class MainWindow(QMainWindow):
         self.resolution_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self.fps_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self._network_timer.timeout.connect(self._refresh_internet_card)
+        self.bonding_server_edit.textChanged.connect(lambda *_: self._update_bonding_alert())
+        self.bonding_uuid_edit.textChanged.connect(lambda *_: self._update_bonding_alert())
+        self.bonding_port_spin.valueChanged.connect(lambda *_: self._update_bonding_alert())
         self._stream.status_changed.connect(self._on_status_changed)
         self._stream.log_line.connect(self._append_log)
         self._stream.validation_failed.connect(self._on_validation_failed)
@@ -1048,29 +1129,67 @@ class MainWindow(QMainWindow):
         self.bonding_uuid_edit.setEnabled(not active)
 
     def _refresh_internet_card(self) -> None:
-        links = list_network_links()
-        if links:
-            self.network_links_label.setText(
-                "Conexões:\n" + "\n".join(link.summary for link in links)
-            )
-        else:
-            self.network_links_label.setText(
-                "Conexões: nenhuma detectada (no Pi aparecem Wi‑Fi / 4G / cabo)."
-            )
+        links = [link for link in list_network_links() if link.up and link.ipv4]
+        key = tuple(
+            (l.iface, l.label, l.ipv4, l.detail, l.has_default_route) for l in links
+        )
+        changed = key != self._network_rows_key
+        if changed:
+            self._network_rows_key = key
+            while self.network_list_layout.count():
+                item = self.network_list_layout.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+            for link in links:
+                self.network_list_layout.addWidget(self._network_row(link))
+            self.network_list.setVisible(bool(links))
+            self.network_empty_label.setVisible(not links)
 
-        status = bonding_service.bonding_status()
+        self._bonding_status = bonding_service.bonding_status()
+        alert_changed = self._update_bonding_alert(sync_height=False)
+        if (changed or alert_changed) and self._tab_stack.currentIndex() == 2:
+            QTimer.singleShot(0, self._sync_tab_height)
+
+    def _update_bonding_alert(self, *, sync_height: bool = True) -> bool:
+        status = getattr(self, "_bonding_status", None)
+        if status is None:
+            return False
         server = self.bonding_server_edit.text().strip()
         port = int(self.bonding_port_spin.value())
         uuid = self.bonding_uuid_edit.text().strip()
         configured = bool(server and port > 0 and uuid)
-        if configured:
-            conf = f"configurado · {server}:{port}"
+
+        if not status.installed:
+            text = (
+                "⚠  Cliente BSBF não instalado, as conexões de internet seguem sem agregação."
+                f' Para instalar, consulte a documentação: <a href="{DOCS_URL}" '
+                f'style="color:#f5c451;">{DOCS_URL.removeprefix("https://")}</a>'
+            )
+            level = "alertWarning"
+        elif not configured:
+            text = (
+                "⚠  Bonding não configurado, as conexões de internet seguem sem agregação."
+            )
+            level = "alertWarning"
+        elif status.active:
+            text = f"✓  Bonding ativo · {server}:{port}"
+            level = "alertOk"
         else:
-            conf = "não configurado (opcional)"
-        self.bonding_status_label.setText(
-            f"Bonding: {status.label_pt} · {conf}"
-            + (f" · {status.detail}" if status.detail else "")
+            text = f"✓  Bonding configurado · {server}:{port} · sobe ao iniciar a transmissão."
+            level = "alertOk"
+
+        alert_changed = (
+            self.bonding_alert.text() != text or self.bonding_alert.objectName() != level
         )
+        if alert_changed:
+            self.bonding_alert.setText(text)
+            if self.bonding_alert.objectName() != level:
+                self.bonding_alert.setObjectName(level)
+                self.bonding_alert.style().unpolish(self.bonding_alert)
+                self.bonding_alert.style().polish(self.bonding_alert)
+            if sync_height and self._tab_stack.currentIndex() == 2:
+                QTimer.singleShot(0, self._sync_tab_height)
+        return alert_changed
 
     def _append_log(self, message: str) -> None:
         event, health = self._smart_log.process(message)

@@ -148,9 +148,9 @@ QPushButton#depsRecheckButton {
     color: #8b93a3;
     border: 1px solid #2a303a;
     border-radius: 14px;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 700;
-    padding: 0;
+    padding: 0 12px;
 }
 
 QPushButton#depsRecheckButton:hover {
@@ -173,6 +173,61 @@ QLabel#rtspHint {
     font-size: 11px;
     color: #8b93a3;
     line-height: 1.35;
+}
+
+QLabel#alertWarning, QLabel#alertOk {
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#alertWarning {
+    color: #f5c451;
+    background-color: rgba(245, 196, 81, 0.08);
+    border: 1px solid rgba(245, 196, 81, 0.28);
+    border-left: 3px solid #f5c451;
+}
+
+QLabel#alertOk {
+    color: #3dd68c;
+    background-color: rgba(61, 214, 140, 0.08);
+    border: 1px solid rgba(61, 214, 140, 0.22);
+    border-left: 3px solid #3dd68c;
+}
+
+QFrame#netRow {
+    background-color: #0c0e12;
+    border: 1px solid #2a303a;
+    border-radius: 10px;
+}
+
+QLabel#netName {
+    font-size: 13px;
+    font-weight: 700;
+    color: #f3f5f8;
+}
+
+QLabel#netMeta {
+    font-size: 11px;
+    color: #8b93a3;
+}
+
+QLabel#netIp {
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: #d5dae6;
+}
+
+QLabel#netChipWarn {
+    border-radius: 999px;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #f5c451;
+    background-color: rgba(245, 196, 81, 0.08);
+    border: 1px solid rgba(245, 196, 81, 0.28);
 }
 
 QPushButton#copyButton {
@@ -213,8 +268,10 @@ QLineEdit::placeholder {
     color: #6d7685;
 }
 
+/* Estilo windows11 do Qt exige fonte do combo em pt (px gera "Point size <= 0"). */
 QComboBox {
     padding-right: 30px;
+    font-size: 10pt;
 }
 
 QComboBox::drop-down {
@@ -368,6 +425,7 @@ QLineEdit, QComboBox, QSpinBox, QLabel#infoValue, QLabel#rtspValue {
 
 QComboBox {
     padding-right: 22px;
+    font-size: 8pt;
 }
 
 QComboBox::drop-down {
@@ -410,12 +468,31 @@ QLabel#depsTitle {
     font-size: 9px;
 }
 
-QLabel#depsChipOk, QLabel#depsChipError {
+QPushButton#depsRecheckButton {
+    font-size: 10px;
+    padding: 0 8px;
+}
+
+QLabel#depsChipOk, QLabel#depsChipError, QLabel#netChipWarn {
     font-size: 10px;
     padding: 3px 6px;
 }
 
-QLabel#depsPorts, QLabel#rtspHint {
+QLabel#depsPorts, QLabel#rtspHint, QLabel#netMeta {
     font-size: 9px;
+}
+
+QLabel#alertWarning, QLabel#alertOk {
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 10px;
+}
+
+QFrame#netRow {
+    border-radius: 8px;
+}
+
+QLabel#netName, QLabel#netIp {
+    font-size: 11px;
 }
 """

@@ -71,7 +71,7 @@ if [[ "$WITH_BSBF" -eq 1 ]]; then
     --server-ipv4 "$BSBF_SERVER" \
     --server-port "$BSBF_PORT" \
     --uuid "$BSBF_UUID"
-  echo "BSBF instalado. Preencha os mesmos dados na aba Internet (bonding) do app."
+  echo "BSBF instalado. Preencha os mesmos dados no card Bonding da aba Conexões do app."
 else
   echo "==> BSBF omitido (opcional). Para instalar:"
   echo "  ./install.sh --with-bsbf --server IP --port PORTA --uuid UUID"
