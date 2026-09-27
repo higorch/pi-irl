@@ -38,6 +38,12 @@ def list_microphones() -> list[DeviceInfo]:
     return mics
 
 
+def invalidate_cache() -> None:
+    """Força nova varredura na próxima listagem (dispositivo conectado/removido)."""
+    global _cache_at
+    _cache_at = 0.0
+
+
 def default_camera() -> str:
     cameras = list_cameras()
     return cameras[0].value if cameras else ""

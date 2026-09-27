@@ -3,18 +3,19 @@
 # Uso:
 #   chmod +x install.sh
 #   ./install.sh
-#   ./install.sh --camera-fix
 #   ./install.sh --with-bsbf --server IP --port 16384 --uuid UUID
-#   ./install.sh --no-autostart
+#   ./install.sh --no-autostart --no-camera-fix --no-reboot
 
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
 WITH_BSBF=0
-CAMERA_FIX=0
+CAMERA_FIX=1
+AUTO_REBOOT=1
 AUTOSTART=1
 NEED_REBOOT=0
+UVC_OPTIONS="options uvcvideo quirks=0x180 nodrop=1 timeout=5000"
 BSBF_SERVER=""
 BSBF_PORT=""
 BSBF_UUID=""
@@ -22,12 +23,13 @@ BSBF_UUID=""
 usage() {
   cat <<'EOF'
 Uso: ./install.sh [opções]
-  --camera-fix         Ajusta UVC (quirks) e desativa USB autosuspend (requer reboot)
   --with-bsbf          Instala o cliente BSBF agora (requer --server --port --uuid)
   --server IP          IPv4 do servidor BSBF
   --port PORTA         Porta do cliente BSBF
   --uuid UUID          UUID do cliente BSBF
   --no-autostart       Não inicia o Pi-IRL (nem a transmissão) ao ligar o Pi
+  --no-camera-fix      Não aplica o ajuste UVC / USB autosuspend da câmera
+  --no-reboot          Não reinicia sozinho após o ajuste da câmera
 EOF
 }
 
@@ -38,6 +40,8 @@ while [[ $# -gt 0 ]]; do
     --port) BSBF_PORT="${2:-}"; shift 2 ;;
     --uuid) BSBF_UUID="${2:-}"; shift 2 ;;
     --camera-fix) CAMERA_FIX=1; shift ;;
+    --no-camera-fix) CAMERA_FIX=0; shift ;;
+    --no-reboot) AUTO_REBOOT=0; shift ;;
     --no-autostart) AUTOSTART=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -106,28 +110,39 @@ fi
 
 if [[ "$CAMERA_FIX" -eq 1 ]]; then
   echo "==> Câmera UVC: quirks + USB autosuspend desativado"
-  echo "options uvcvideo quirks=0x180 nodrop=1 timeout=5000" \
-    | sudo tee /etc/modprobe.d/uvcvideo.conf >/dev/null
+  CAMERA_CHANGED=0
+
+  UVC_CONF=/etc/modprobe.d/uvcvideo.conf
+  if [[ -f "$UVC_CONF" ]] && grep -qxF "$UVC_OPTIONS" "$UVC_CONF"; then
+    echo "$UVC_CONF já configurado"
+  else
+    echo "$UVC_OPTIONS" | sudo tee "$UVC_CONF" >/dev/null
+    echo "Gravado $UVC_CONF"
+    CAMERA_CHANGED=1
+  fi
 
   CMDLINE=/boot/firmware/cmdline.txt
   [[ -f "$CMDLINE" ]] || CMDLINE=/boot/cmdline.txt
   if [[ -f "$CMDLINE" ]]; then
     if grep -q 'usbcore.autosuspend=-1' "$CMDLINE"; then
-      echo "cmdline.txt já tem usbcore.autosuspend=-1"
+      echo "$CMDLINE já tem usbcore.autosuspend=-1"
     else
       [[ -f "$CMDLINE.bak-pi-irl" ]] || sudo cp "$CMDLINE" "$CMDLINE.bak-pi-irl"
       # cmdline.txt deve continuar em uma única linha
       sudo sed -i '1 s/[[:space:]]*$/ usbcore.autosuspend=-1/' "$CMDLINE"
       echo "Adicionado usbcore.autosuspend=-1 em $CMDLINE (backup: $CMDLINE.bak-pi-irl)"
+      CAMERA_CHANGED=1
     fi
   else
     echo "cmdline.txt não encontrado — adicione usbcore.autosuspend=-1 manualmente."
   fi
 
-  if command -v update-initramfs >/dev/null 2>&1; then
-    sudo update-initramfs -u
+  if [[ "$CAMERA_CHANGED" -eq 1 ]]; then
+    if command -v update-initramfs >/dev/null 2>&1; then
+      sudo update-initramfs -u
+    fi
+    NEED_REBOOT=1
   fi
-  NEED_REBOOT=1
 fi
 
 if [[ "$WITH_BSBF" -eq 1 ]]; then
@@ -158,5 +173,11 @@ echo "Pronto. Inicie com: ./start-pi-irl.sh"
 echo "ou: source .venv/bin/activate && python -m app.main"
 if [[ "$NEED_REBOOT" -eq 1 ]]; then
   echo
-  echo "Reinicie para aplicar o ajuste da câmera: sudo reboot"
+  if [[ "$AUTO_REBOOT" -eq 1 ]]; then
+    echo "Reiniciando em 10 s para aplicar o ajuste da câmera (Ctrl+C cancela)…"
+    sleep 10
+    sudo reboot
+  else
+    echo "Reinicie para aplicar o ajuste da câmera: sudo reboot"
+  fi
 fi

@@ -212,10 +212,11 @@ Opções do `install.sh` (rode como usuário normal, sem `sudo`):
 
 | Opção | O que faz |
 |-------|-----------|
-| *(nenhuma)* | FFmpeg, V4L2, ALSA, Python/.venv, atalho e **início automático** ao ligar o Pi |
-| `--camera-fix` | Ajuste da câmera USB (UVC) + USB autosuspend desligado — ver abaixo |
+| *(nenhuma)* | FFmpeg, V4L2, ALSA, Python/.venv, atalho, **início automático** ao ligar o Pi e **ajuste da câmera** (reinicia sozinho se precisar) |
 | `--with-bsbf --server IP --port PORTA --uuid UUID` | Instala o cliente BSBF já na instalação (opcional: o app instala sozinho ao transmitir) |
 | `--no-autostart` | Remove/não cria o início automático |
+| `--no-camera-fix` | Não aplica o ajuste da câmera |
+| `--no-reboot` | Não reinicia sozinho (avisa para rodar `sudo reboot`) |
 
 No `.env`, preencha pelo menos:
 
@@ -264,16 +265,17 @@ curl -fsSL cld.bondingshouldbefree.org | sudo sh -s -- \
   --uuid UUID_DO_CLIENTE
 ```
 
-### Câmera USB (UVC) — se a imagem trava, cai ou some
+### Câmera USB (UVC) — ajuste automático
 
-Automático:
+O `./install.sh` já faz sozinho:
 
-```bash
-./install.sh --camera-fix
-sudo reboot
-```
+1. Grava `/etc/modprobe.d/uvcvideo.conf` com `options uvcvideo quirks=0x180 nodrop=1 timeout=5000`
+2. Acrescenta `usbcore.autosuspend=-1` no final da linha única de `/boot/firmware/cmdline.txt` (backup em `cmdline.txt.bak-pi-irl`)
+3. Roda `sudo update-initramfs -u` e **reinicia o Pi** (10 s para cancelar com Ctrl+C)
 
-Manual:
+Só altera o que ainda não estiver configurado — rodar de novo não reinicia à toa.
+
+Equivalente manual (referência):
 
 ```bash
 # 1. Configura o UVC da câmera
@@ -320,7 +322,7 @@ Abas:
 | **Conexões** | Card Internet (conexões ativas) + card Bonding (BSBF e avisos) |
 
 1. Em **Servidor (VPS)**, confira Host / porta / ID (ou venha do `.env`).  
-2. Em **Dispositivos**, escolha câmera e mic.  
+2. Em **Dispositivos**, escolha câmera e mic. Câmeras e microfones USB conectados/removidos aparecem sozinhos (sem clicar em Procurar) e são registrados no log.  
 3. Em **Conexões**, veja as redes ativas; preencha o Bonding (BSBF) só se for usar.  
 4. Clique **Iniciar transmissão**.  
 5. No OBS: Media Source → `rtsp://IP_VPS:8554/irl`  
@@ -403,6 +405,6 @@ Bonding e a lista de redes são para Linux/Pi.
 | OBS preto | Pi **Ao vivo**? `rtsp_transport=tcp`? Firewall `8554/tcp` |
 | Bonding não sobe | Mensagem no registro · `sudo bsbf-bonding --status` · `systemctl status bsbf-mptcp xray-bsbf-bonding` · porta liberada na VPS |
 | "sudo pediu senha" | Ver **Sudo sem senha** |
-| Câmera trava/cai | `./install.sh --camera-fix` + `sudo reboot` |
+| Câmera trava/cai | Conferir `quirks`/`autosuspend` (seção Câmera USB) · rodar `./install.sh` de novo |
 | Não transmite ao ligar | Registro do app mostra o que falta · `ls ~/.config/autostart/` · login automático ativo |
 | MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` |

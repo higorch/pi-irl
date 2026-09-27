@@ -41,6 +41,7 @@ from app.config import load_config, save_config
 from app.models.stream_config import StreamConfig, StreamStatus
 from app.services import devices
 from app.services import bonding as bonding_service
+from app.services.device_watch import DeviceWatcher
 from app.services.ffmpeg import FFmpegService
 from app.services.media_profile import (
     list_fps_choices,
@@ -160,6 +161,8 @@ class MainWindow(QMainWindow):
         self._smart_log = SmartLogFilter()
         self._network_timer = QTimer(self)
         self._network_timer.setInterval(5000)
+        self._device_watcher = DeviceWatcher(self)
+        self._devices_dirty = False
 
         self._build_ui()
         self._populate_devices()
@@ -787,32 +790,73 @@ class MainWindow(QMainWindow):
         return card
 
     def _populate_devices(self) -> None:
+        """Recarrega as listas mantendo a seleção atual (ou a salva) quando possível."""
         current_camera = str(self._combo_value(self.camera_combo) or "")
         current_mic = str(self._combo_value(self.microphone_combo) or "")
-
-        self.camera_combo.clear()
         cameras = devices.list_cameras()
-        if cameras:
-            for camera in cameras:
-                self.camera_combo.addItem(camera.label, camera.value)
-        else:
-            self.camera_combo.addItem("Nenhuma câmera encontrada", "")
-
-        self.microphone_combo.clear()
         microphones = devices.list_microphones()
-        if microphones:
-            for mic in microphones:
-                self.microphone_combo.addItem(mic.label, mic.value)
-        else:
-            self.microphone_combo.addItem("Nenhum microfone encontrado", "")
+        saved = getattr(self, "_config", None)
 
-        if current_camera and any(c.value == current_camera for c in cameras):
-            self._select_combo_value(self.camera_combo, current_camera)
-        if current_mic and any(m.value == current_mic for m in microphones):
-            self._select_combo_value(self.microphone_combo, current_mic)
+        for combo, items, current, saved_value, empty_text in (
+            (self.camera_combo, cameras, current_camera,
+             saved.camera if saved else "", "Nenhuma câmera encontrada"),
+            (self.microphone_combo, microphones, current_mic,
+             saved.microphone if saved else "", "Nenhum microfone encontrado"),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            for item in items:
+                combo.addItem(item.label, item.value)
+            if not items:
+                combo.addItem(empty_text, "")
+            values = {item.value for item in items}
+            if current in values:
+                self._select_combo_value(combo, current)
+            elif saved_value in values:
+                self._select_combo_value(combo, saved_value)
+            combo.blockSignals(False)
 
-        self._refresh_video_options(prefer_recommend=True)
+        new_camera = str(self._combo_value(self.camera_combo) or "")
+        new_mic = str(self._combo_value(self.microphone_combo) or "")
+        if new_camera != current_camera or not self.resolution_combo.count():
+            self._refresh_video_options(prefer_recommend=True)
+        elif new_mic != current_mic:
+            self._refresh_video_options(prefer_recommend=False)
         self._sync_tab_height()
+
+    def _device_labels(self, combo: QComboBox) -> dict[str, str]:
+        return {
+            str(combo.itemData(i)): combo.itemText(i)
+            for i in range(combo.count())
+            if combo.itemData(i)
+        }
+
+    def _on_devices_changed(self) -> None:
+        """Câmera/microfone USB conectado ou removido."""
+        if self._stream.is_active:
+            self._devices_dirty = True
+            return
+        self._devices_dirty = False
+
+        before_cams = self._device_labels(self.camera_combo)
+        before_mics = self._device_labels(self.microphone_combo)
+        devices.invalidate_cache()
+        self._populate_devices()
+        after_cams = self._device_labels(self.camera_combo)
+        after_mics = self._device_labels(self.microphone_combo)
+
+        events: list[str] = []
+        for kind, added, removed, before, after in (
+            ("Câmera", "conectada", "removida", before_cams, after_cams),
+            ("Microfone", "conectado", "removido", before_mics, after_mics),
+        ):
+            events += [f"{kind} {added}: {after[v]}" for v in after if v not in before]
+            events += [f"{kind} {removed}: {before[v]}" for v in before if v not in after]
+        if not events:
+            return
+        for event in events:
+            self._append_app_log(event)
+        self._refresh_dependencies()
 
     def _refresh_video_options(self, *, prefer_recommend: bool = False) -> None:
         """Preenche resolução/FPS e pré-seleciona o melhor (ou mantém a escolha atual)."""
@@ -936,6 +980,7 @@ class MainWindow(QMainWindow):
         self.resolution_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self.fps_combo.currentIndexChanged.connect(self._sync_suggested_bitrate)
         self._network_timer.timeout.connect(self._refresh_internet_card)
+        self._device_watcher.changed.connect(self._on_devices_changed)
         self.bonding_server_edit.textChanged.connect(lambda *_: self._update_bonding_alert())
         self.bonding_uuid_edit.textChanged.connect(lambda *_: self._update_bonding_alert())
         self.bonding_port_spin.valueChanged.connect(lambda *_: self._update_bonding_alert())
@@ -1037,6 +1082,7 @@ class MainWindow(QMainWindow):
         if not has(self.camera_combo, saved.camera) or not has(
             self.microphone_combo, saved.microphone
         ):
+            devices.invalidate_cache()
             self._populate_devices()
 
         missing: list[str] = []
@@ -1052,16 +1098,14 @@ class MainWindow(QMainWindow):
         return missing
 
     def _on_refresh_video(self) -> None:
-        current_mic = self._combo_value(self.microphone_combo)
+        devices.invalidate_cache()
         self._populate_devices()
-        self._select_combo_value(self.microphone_combo, current_mic)
         self._refresh_dependencies()
         self._append_app_log("Câmeras atualizadas.")
 
     def _on_refresh_audio(self) -> None:
-        current_cam = self._combo_value(self.camera_combo)
+        devices.invalidate_cache()
         self._populate_devices()
-        self._select_combo_value(self.camera_combo, current_cam)
         self._refresh_dependencies()
         self._append_app_log("Microfones atualizados.")
 
@@ -1146,6 +1190,8 @@ class MainWindow(QMainWindow):
                 self._append_app_log(f"Ao vivo · RTSP: {url}")
         if enum_status in (StreamStatus.OFFLINE, StreamStatus.ERROR):
             self.health_label.setText("Saúde: —")
+            if self._devices_dirty:
+                QTimer.singleShot(0, self._on_devices_changed)
         self._refresh_internet_card()
 
     def _set_status_badge(self, status: StreamStatus) -> None:
@@ -1249,7 +1295,7 @@ class MainWindow(QMainWindow):
             text = f"✓  Bonding será reconfigurado para {server}:{port} ao iniciar a transmissão."
             level = "alertOk"
         elif status.active:
-            text = f"✓  Bonding ativo · {server}:{port}"
+            text = ""
             level = "alertOk"
         else:
             text = f"✓  Bonding configurado · {server}:{port} · sobe ao iniciar a transmissão."
@@ -1260,6 +1306,7 @@ class MainWindow(QMainWindow):
         )
         if alert_changed:
             self.bonding_alert.setText(text)
+            self.bonding_alert.setVisible(bool(text))
             if self.bonding_alert.objectName() != level:
                 self.bonding_alert.setObjectName(level)
                 self.bonding_alert.style().unpolish(self.bonding_alert)
