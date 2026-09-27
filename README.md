@@ -21,6 +21,20 @@ Câmera + Microfone
 | **VPS** | MediaMTX · BSBF Server (opcional) |
 | **Raspberry Pi** | Pi-IRL · FFmpeg · BSBF Client (opcional) |
 
+## Interface
+
+**Dispositivos** — câmera, resolução, FPS, taxa de bits e microfone.
+
+![Aba Dispositivos](assets/screenshot-01.png)
+
+**Servidor (VPS)** — host do MediaMTX, porta SRT, ID da transmissão e URL RTSP para o OBS.
+
+![Aba Servidor (VPS)](assets/screenshot-02.png)
+
+**Conexões** — conexões de internet ativas e configuração do Bonding (BSBF).
+
+![Aba Conexões](assets/screenshot-03.png)
+
 ---
 
 ## 1. VPS — MediaMTX
@@ -257,10 +271,10 @@ Abas:
 | Aba | Conteúdo |
 |-----|----------|
 | **Dispositivos** | Câmera e microfone conectados |
-| **Conexão** | Host MediaMTX, porta SRT, Stream ID, URL RTSP do OBS |
+| **Servidor (VPS)** | Host MediaMTX, porta SRT, Stream ID, URL RTSP do OBS |
 | **Conexões** | Card Internet (conexões ativas) + card Bonding (BSBF e avisos) |
 
-1. Em **Conexão**, confira Host / porta / ID (ou venha do `.env`).  
+1. Em **Servidor (VPS)**, confira Host / porta / ID (ou venha do `.env`).  
 2. Em **Dispositivos**, escolha câmera e mic.  
 3. Em **Conexões**, veja as redes ativas; preencha o Bonding (BSBF) só se for usar.  
 4. Clique **Iniciar transmissão**.  
