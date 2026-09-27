@@ -205,9 +205,17 @@ git clone https://github.com/higorch/pi-irl.git
 cd pi-irl
 chmod +x install.sh start-pi-irl.sh
 ./install.sh
-cp .env.example .env
-nano .env
+nano .env   # o install.sh cria a partir do .env.example
 ```
+
+Opções do `install.sh` (rode como usuário normal, sem `sudo`):
+
+| Opção | O que faz |
+|-------|-----------|
+| *(nenhuma)* | FFmpeg, V4L2, ALSA, Python/.venv, atalho e **início automático** ao ligar o Pi |
+| `--camera-fix` | Ajuste da câmera USB (UVC) + USB autosuspend desligado — ver abaixo |
+| `--with-bsbf --server IP --port PORTA --uuid UUID` | Instala o cliente BSBF já na instalação (opcional: o app instala sozinho ao transmitir) |
+| `--no-autostart` | Remove/não cria o início automático |
 
 No `.env`, preencha pelo menos:
 
@@ -217,13 +225,7 @@ SRT_PORT=8890
 STREAM_ID=irl
 ```
 
-Com bonding (use porta/UUID da VPS):
-
-```bash
-./install.sh --with-bsbf --server IP_VPS --port PORTA_BSBF --uuid UUID_DO_CLIENTE
-```
-
-E no `.env`:
+Com bonding, basta preencher no `.env` (ou no card Bonding do app) — o cliente BSBF é instalado/ativado no primeiro **Iniciar transmissão**:
 
 ```env
 BONDING_SERVER=IP_VPS
@@ -253,13 +255,56 @@ cp .env.example .env
 python -m app.main
 ```
 
-Cliente BSBF (se não usou `--with-bsbf`):
+Cliente BSBF manual (opcional — o app faz isso sozinho ao transmitir):
 
 ```bash
 curl -fsSL cld.bondingshouldbefree.org | sudo sh -s -- \
   --server-ipv4 IP_VPS \
   --server-port PORTA_BSBF \
   --uuid UUID_DO_CLIENTE
+```
+
+### Câmera USB (UVC) — se a imagem trava, cai ou some
+
+Automático:
+
+```bash
+./install.sh --camera-fix
+sudo reboot
+```
+
+Manual:
+
+```bash
+# 1. Configura o UVC da câmera
+sudo nano /etc/modprobe.d/uvcvideo.conf
+# Conteúdo:
+# options uvcvideo quirks=0x180 nodrop=1 timeout=5000
+
+# 2. Desativa USB autosuspend no boot
+sudo nano /boot/firmware/cmdline.txt
+# Adicionar no FINAL da única linha (não crie linha nova):
+# usbcore.autosuspend=-1
+
+# 3. Atualiza e reinicia
+sudo update-initramfs -u
+sudo reboot
+```
+
+Conferir após o reboot:
+
+```bash
+cat /sys/module/uvcvideo/parameters/quirks      # 384 (= 0x180)
+cat /sys/module/usbcore/parameters/autosuspend  # -1
+```
+
+### Sudo sem senha
+
+O app usa `sudo -n` para instalar/ativar o BSBF sozinho. No Raspberry Pi OS o usuário padrão já tem sudo sem senha. Se o seu pedir senha:
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010-pi-irl
+sudo chmod 440 /etc/sudoers.d/010-pi-irl
 ```
 
 ---
@@ -283,8 +328,33 @@ Abas:
    - Opções FFmpeg: `rtsp_transport=tcp`  
    - Buffer de rede: `0` MB  
 
-Bonding **não configurado** → transmite normalmente (aviso no registro).  
-Bonding **configurado** → o app tenta subir o BSBF no mesmo clique.
+### Bonding ao clicar em Iniciar transmissão
+
+Com servidor (IPv4), porta e UUID preenchidos, **antes** de iniciar o FFmpeg o app:
+
+| Situação no Pi | O que o app faz |
+|----------------|-----------------|
+| Cliente BSBF não instalado | Instala: `curl -fsSL cld.bondingshouldbefree.org \| sudo sh -s -- --server-ipv4 … --server-port … --uuid …` (alguns minutos) |
+| Instalado com outro servidor/porta/UUID | Grava `/usr/local/etc/bsbf/bsbf-bonding.conf` e roda `bsbf-bonding --enable` |
+| Instalado e parado | `bsbf-bonding --enable` |
+| Instalado e ativo | Nada — transmite direto |
+
+Depois disso o SRT sai normalmente: com o BSBF ativo, TCP e UDP para a internet passam pelo túnel agregado, sem mudar a URL.
+
+Se algo falhar (sem internet, sudo com senha, erro na instalação), o motivo aparece no registro e a transmissão **segue sem agregação**. Sem bonding configurado, transmite normalmente.
+
+Status do cliente no Pi: `sudo bsbf-bonding --status` · monitor web em `http://localhost:8080/`.
+
+### Início automático ao ligar o Pi
+
+O `install.sh` cria `~/.config/autostart/pi-irl.desktop` (abre o app com `--autostart` quando a área de trabalho carrega). Ao abrir, o app:
+
+1. Confere a configuração salva (Host, ID, câmera e microfone). Incompleta → só abre, sem transmitir.
+2. Espera até ~3 min a câmera e o microfone salvos aparecerem e uma conexão com internet.
+3. Inicia a transmissão (com bonding, se configurado).
+
+Requisitos: login automático na área de trabalho (padrão do Raspberry Pi OS) e ter transmitido ao menos uma vez pelo app (salva câmera/mic).  
+Desativar: `./install.sh --no-autostart` ou `rm ~/.config/autostart/pi-irl.desktop`.
 
 ---
 
@@ -299,7 +369,7 @@ cp .env.example .env
 | `VPS_HOST` | IP ou domínio da VPS (MediaMTX) |
 | `SRT_PORT` | Porta SRT (padrão `8890`) |
 | `STREAM_ID` | Path do stream (padrão `irl`) |
-| `BONDING_SERVER` | IP do BSBF (opcional) |
+| `BONDING_SERVER` | IPv4 do servidor BSBF (opcional) |
 | `BONDING_PORT` | Porta do cliente BSBF (opcional) |
 | `BONDING_UUID` | UUID do cliente BSBF (opcional) |
 
@@ -331,5 +401,8 @@ Bonding e a lista de redes são para Linux/Pi.
 | FFmpeg não encontrado | `ffmpeg -version` · rode `./install.sh` |
 | Código 251 / falha ao iniciar | Câmera/mic, Host SRT, firewall `8890/udp` |
 | OBS preto | Pi **Ao vivo**? `rtsp_transport=tcp`? Firewall `8554/tcp` |
-| Bonding não sobe | Cliente instalado? Porta/UUID certos? `systemctl status bsbf-mptcp` |
+| Bonding não sobe | Mensagem no registro · `sudo bsbf-bonding --status` · `systemctl status bsbf-mptcp xray-bsbf-bonding` · porta liberada na VPS |
+| "sudo pediu senha" | Ver **Sudo sem senha** |
+| Câmera trava/cai | `./install.sh --camera-fix` + `sudo reboot` |
+| Não transmite ao ligar | Registro do app mostra o que falta · `ls ~/.config/autostart/` · login automático ativo |
 | MediaMTX offline | `systemctl status mediamtx` · `journalctl -u mediamtx -f` |

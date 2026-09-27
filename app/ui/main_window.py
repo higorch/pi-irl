@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 from datetime import datetime
 
 from PySide6.QtCore import QPointF, QSize, Qt, QTimer
@@ -65,6 +66,11 @@ AUTO_AUDIO_CHANNELS = 1
 
 DOCS_URL = "https://github.com/higorch/pi-irl"
 
+# Início automático no boot: espera câmera, mic e internet (~3 min no máximo)
+AUTOSTART_FIRST_DELAY_MS = 3000
+AUTOSTART_RETRY_MS = 5000
+AUTOSTART_MAX_ATTEMPTS = 36
+
 ARROW_COLOR = "#9aa3b5"
 # Telas ~3.5" (ex.: 480x320) e afins
 SMALL_SCREEN_WIDTH = 700
@@ -126,7 +132,7 @@ class NumberBox(QSpinBox):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, autostart: bool = False) -> None:
         super().__init__()
         self.setWindowTitle("Pi-IRL")
 
@@ -166,6 +172,10 @@ class MainWindow(QMainWindow):
         self._refresh_internet_card()
         self._network_timer.start()
         QTimer.singleShot(50, self._sync_tab_height)
+
+        self._autostart_attempts = 0
+        if autostart:
+            QTimer.singleShot(AUTOSTART_FIRST_DELAY_MS, self._try_autostart)
 
     def _detect_compact_screen(self) -> bool:
         screen = QGuiApplication.primaryScreen()
@@ -647,7 +657,7 @@ class MainWindow(QMainWindow):
         self.bonding_alert.setOpenExternalLinks(True)
 
         self.bonding_server_edit = QLineEdit()
-        self.bonding_server_edit.setPlaceholderText("IP do servidor BSBF")
+        self.bonding_server_edit.setPlaceholderText("IPv4 do servidor BSBF")
         self.bonding_server_edit.setClearButtonEnabled(True)
 
         self.bonding_port_spin = NumberBox()
@@ -660,8 +670,8 @@ class MainWindow(QMainWindow):
         self.bonding_uuid_edit.setClearButtonEnabled(True)
 
         bonding_hint = QLabel(
-            "Opcional. Se IP + porta + UUID estiverem preenchidos, "
-            "o bonding sobe ao clicar em Iniciar transmissão. "
+            "Opcional. Com IP + porta + UUID preenchidos, ao clicar em Iniciar transmissão "
+            "o cliente BSBF é instalado (se faltar), configurado e ativado antes do vídeo. "
             "Sem isso, a transmissão segue normalmente."
         )
         bonding_hint.setObjectName("rtspHint")
@@ -984,6 +994,63 @@ class MainWindow(QMainWindow):
     def _on_stop_clicked(self) -> None:
         self._stream.stop()
 
+    def _try_autostart(self) -> None:
+        """Inicia a transmissão sozinho se a configuração salva estiver completa."""
+        if self._stream.is_active:
+            return
+        saved = self._config
+        self._autostart_attempts += 1
+
+        if self._autostart_attempts == 1:
+            errors = saved.validate()
+            if FFmpegService.resolve_ffmpeg_path() is None:
+                errors.append("FFmpeg não encontrado.")
+            if errors:
+                self._append_app_log(
+                    "Início automático desativado — configuração incompleta: "
+                    + " ".join(errors)
+                )
+                return
+
+        missing = self._autostart_missing(saved)
+        if not missing:
+            self._apply_config_to_ui(saved)
+            self._append_app_log("Início automático: tudo pronto — iniciando transmissão.")
+            self._on_start_clicked()
+            return
+
+        if self._autostart_attempts >= AUTOSTART_MAX_ATTEMPTS:
+            self._append_app_log(
+                "Início automático cancelado — não encontrado: " + ", ".join(missing) + "."
+            )
+            return
+        if self._autostart_attempts == 1:
+            self._append_app_log(
+                "Início automático: aguardando " + ", ".join(missing) + "…"
+            )
+        QTimer.singleShot(AUTOSTART_RETRY_MS, self._try_autostart)
+
+    def _autostart_missing(self, saved: StreamConfig) -> list[str]:
+        def has(combo: QComboBox, value: str) -> bool:
+            return combo.findData(value) >= 0
+
+        if not has(self.camera_combo, saved.camera) or not has(
+            self.microphone_combo, saved.microphone
+        ):
+            self._populate_devices()
+
+        missing: list[str] = []
+        if not has(self.camera_combo, saved.camera):
+            missing.append("câmera")
+        if not has(self.microphone_combo, saved.microphone):
+            missing.append("microfone")
+        if platform.system() == "Linux" and not any(
+            link.up and link.ipv4 and link.has_default_route
+            for link in list_network_links()
+        ):
+            missing.append("internet")
+        return missing
+
     def _on_refresh_video(self) -> None:
         current_mic = self._combo_value(self.microphone_combo)
         self._populate_devices()
@@ -1158,19 +1225,29 @@ class MainWindow(QMainWindow):
         port = int(self.bonding_port_spin.value())
         uuid = self.bonding_uuid_edit.text().strip()
         configured = bool(server and port > 0 and uuid)
+        invalid = (
+            bonding_service.validate_settings(server, port, uuid) if configured else None
+        )
+        supported = bonding_service.is_supported()
 
-        if not status.installed:
+        level = "alertWarning"
+        if invalid:
+            text = f"⚠  Bonding: {invalid}."
+        elif not status.installed and not (configured and supported):
             text = (
                 "⚠  Cliente BSBF não instalado, as conexões de internet seguem sem agregação."
                 f' Para instalar, consulte a documentação: <a href="{DOCS_URL}" '
                 f'style="color:#f5c451;">{DOCS_URL.removeprefix("https://")}</a>'
             )
-            level = "alertWarning"
         elif not configured:
             text = (
                 "⚠  Bonding não configurado, as conexões de internet seguem sem agregação."
             )
-            level = "alertWarning"
+        elif not status.installed:
+            text = "⚠  Cliente BSBF não instalado, será instalado ao iniciar a transmissão."
+        elif status.conf_known and not status.matches(server, port, uuid):
+            text = f"✓  Bonding será reconfigurado para {server}:{port} ao iniciar a transmissão."
+            level = "alertOk"
         elif status.active:
             text = f"✓  Bonding ativo · {server}:{port}"
             level = "alertOk"
@@ -1207,6 +1284,16 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Atenção", message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._stream.bonding_busy:
+            answer = QMessageBox.question(
+                self,
+                "Bonding em andamento",
+                "O cliente BSBF ainda está sendo instalado/configurado. "
+                "Fechar agora interrompe o processo. Fechar mesmo assim?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         self._network_timer.stop()
         save_config(self._collect_config())
         if self._stream.is_active:

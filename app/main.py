@@ -20,7 +20,7 @@ def main() -> int:
     app.setApplicationName("Pi-IRL")
     app.setOrganizationName("Pi-IRL")
 
-    window = MainWindow()
+    window = MainWindow(autostart="--autostart" in sys.argv[1:])
     window.show()
     return app.exec()
 

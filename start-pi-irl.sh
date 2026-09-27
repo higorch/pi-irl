@@ -18,4 +18,4 @@ fi
 
 # shellcheck disable=SC1091
 source .venv/bin/activate
-exec python -m app.main
+exec python -m app.main "$@"
